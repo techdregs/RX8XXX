@@ -1,3 +1,5 @@
+Etsy link for power supply PCB using the RX8111CE: 
+YouTube Video for reference:
 
 Note: This should be considered as a beta. I have tested heavily in ESPHome to verify features work correctly, but there are probably edge cases that I haven't considered. Feel free to submit bugs. I have not tested the regular embedded libraries as much, so I anticipate those might have more issues.
 
@@ -125,7 +127,7 @@ Drives the chip's FOUT pin with a square wave at the selected frequency. Useful 
 
 The alarm triggers when the current time matches **all enabled alarm fields** simultaneously. Omit a field to ignore it (match any value for that field).
 
-Example: setting only `alarm_hour: 5` will fire at the start of hour 5 (5:00:00). Note: if you clear AF while still in the matching window (during hour 5), the alarm re-fires immediately since the hour still matches.
+Example: setting only `alarm_hour: 5` will fire at the start of hour 5 (5:00:00) every day. Note: if you clear AF while still in the matching window (during hour 5), the alarm re-fires immediately since the hour still matches.
 
 ```yaml
     alarm_second: 30         # 0-59, RX8111CE only
