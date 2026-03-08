@@ -1,4 +1,5 @@
 Etsy link for power supply PCB using the RX8111CE: 
+
 YouTube Video for reference:
 
 Note: This should be considered as a beta. I have tested heavily in ESPHome to verify features work correctly, but there are probably edge cases that I haven't considered. Feel free to submit bugs. I have not tested the regular embedded libraries as much, so I anticipate those might have more issues.
