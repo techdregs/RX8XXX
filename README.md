@@ -614,6 +614,3 @@ interval:
 - **ESPHome** with `i2c` component configured
 - `binary_sensor` is auto-loaded by the component
 
-## License
-
-See repository for license details.
