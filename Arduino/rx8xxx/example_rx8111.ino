@@ -123,6 +123,27 @@ void print_time(const char *label, const rx8xxx::RX8xxxTime &t) {
 }
 
 // =============================================================================
+// Helper: print a decoded RX8111 timestamp record
+// =============================================================================
+void print_timestamp_record(const char *label, const rx8xxx::RX8111TimestampRecord &record) {
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d.%03u",
+           record.year, record.month, record.day,
+           record.hour, record.minute, record.second,
+           record.milliseconds);
+  Serial.print(label);
+  Serial.println(buf);
+  Serial.print("  status: VLOW=");
+  Serial.print(record.vlow ? "1" : "0");
+  Serial.print(" VCMP=");
+  Serial.print(record.vcmp ? "1" : "0");
+  Serial.print(" VDET=");
+  Serial.print(record.vdet ? "1" : "0");
+  Serial.print(" XST=");
+  Serial.println(record.xst ? "1" : "0");
+}
+
+// =============================================================================
 // setup()
 // =============================================================================
 void setup() {
@@ -221,10 +242,19 @@ void setup() {
   //   RX8130CE: 16-bit counter, max 65,535 (values above are clamped)
   //
 
-  // --- Timestamp engine (RX8111CE only) ---
-  // When enabled, the chip records timestamps of external events detected
-  // on the EVIN pin into internal RAM (0x40-0x7F).
-  rtc.set_timestamp_enabled(false);
+  // --- EVIN event detection + timestamp engine (RX8111CE only) ---
+  // EVIN events are configured as level-detected (high or low), not edge-detected.
+  // The flag (EVF) is latched until clear_event_flag() is called, while timestamps
+  // are read explicitly by the application.
+  //
+  // This example uses buffered timestamp mode so multiple EVIN events can be read
+  // out in one batch from the timestamp RAM.
+  rtc.set_event_enabled(true);
+  rtc.set_event_level(rx8xxx::EVENT_LEVEL_LOW);
+  rtc.set_evin_filter(2);  // 15.6 ms chattering filter
+  rtc.set_evin_pull(rx8xxx::EVIN_PULL_UP_500K);
+  rtc.set_timestamp_enabled(true);
+  rtc.set_timestamp_record_mode(rx8xxx::TIMESTAMP_RECORD_STOP_WHEN_FULL);
 
   // ------------------------------------------------------------------
   // 3. Initialize the RTC
@@ -235,6 +265,7 @@ void setup() {
   //   - Configures FOUT
   //   - Programs alarm registers (or disables alarm if not enabled)
   //   - Programs timer registers (or disables timer if not enabled)
+  //   - Programs EVIN event interrupt settings (or disables them if not enabled)
   //   - Applies chip-specific options (timestamp engine, etc.)
   //
   // Returns false on I2C failure. VLF/XST warnings are logged but don't
@@ -287,7 +318,7 @@ void setup() {
   // ------------------------------------------------------------------
   // 6. Check chip-specific status (RX8111CE)
   // ------------------------------------------------------------------
-  // These accessors are populated after poll_flags() or after begin().
+  // These accessors are populated after poll_flags().
   // For RX8111CE:
   //   xst_flag()    — true if crystal oscillation stop was detected
   //   battery_low() — true if VBAT is below the low threshold
@@ -298,6 +329,8 @@ void setup() {
   if (rtc.poll_flags(&flags)) {
     Serial.print("VLF (oscillation lost): ");
     Serial.println(flags.vlf ? "YES" : "no");
+    Serial.print("Event flag (EVF):       ");
+    Serial.println(flags.event_flag ? "YES" : "no");
     Serial.print("Crystal stop (XST):    ");
     Serial.println(rtc.xst_flag() ? "YES" : "no");
     Serial.print("Battery low (VLOW):    ");
@@ -308,7 +341,7 @@ void setup() {
 
   Serial.println();
   Serial.println("Entering main loop — polling flags every second...");
-  Serial.println("(Alarm set for 07:30:00, Timer fires every 10s)");
+  Serial.println("(Alarm set for 07:30:00, Timer fires every 10s, EVIN events timestamped)");
   Serial.println();
 }
 
@@ -316,9 +349,9 @@ void setup() {
 // loop() — periodic polling
 // =============================================================================
 // The library uses a polling model: call poll_flags() periodically and check
-// the returned RX8xxxFlags struct. The alarm_edge and timer_edge booleans are
-// true only on the first poll after a 0->1 flag transition, so your handler
-// fires exactly once per event regardless of poll frequency.
+// the returned RX8xxxFlags struct. The alarm_edge, timer_edge, and event_edge
+// booleans are true only on the first poll after a 0->1 flag transition, so
+// your handler fires exactly once per event regardless of poll frequency.
 
 unsigned long last_poll_ms = 0;
 unsigned long last_time_print_ms = 0;
@@ -352,6 +385,35 @@ void loop() {
       if (flags.timer_edge) {
         Serial.println(">>> TIMER FIRED! <<<");
         rtc.clear_timer_flag();
+      }
+
+      // --- EVIN event (rising edge of EVF) ---
+      // event_edge is true exactly once when EVF transitions from 0 to 1.
+      // EVF is manual like AF; clear_event_flag() is what releases /INT and
+      // re-arms the next event. Timestamp RAM is separate from EVF and is only
+      // cleared after a successful drain.
+      if (flags.event_edge) {
+        Serial.println(">>> EVIN EVENT FIRED! <<<");
+        Serial.print("EVIN pin at poll time: ");
+        Serial.println(rtc.evin_state() ? "HIGH" : "LOW");
+
+        rx8xxx::RX8111TimestampRecord buffered_records[8];
+        uint8_t buffered_count = 0;
+        if (rtc.drain_buffered_event_timestamps(buffered_records, 8, &buffered_count)) {
+          if (buffered_count == 0) {
+            Serial.println("No buffered timestamp records available.");
+          } else {
+            for (uint8_t i = 0; i < buffered_count; i++) {
+              Serial.print("Buffered timestamp #");
+              Serial.println(i + 1);
+              print_timestamp_record("  ", buffered_records[i]);
+            }
+          }
+        } else {
+          Serial.println("WARNING: Failed to drain buffered timestamp records.");
+        }
+
+        rtc.clear_event_flag();
       }
 
       // --- VLF warning ---
@@ -426,6 +488,18 @@ void loop() {
       Serial.print("Supports per-second alarm: ");
       Serial.println(rtc.supports_alarm_second() ? "yes" : "no");
     }
+
+    // Send 'L' to demonstrate the single-record timestamp API.
+    // This works only when timestamp_record_mode is TIMESTAMP_RECORD_LATEST.
+    if (c == 'L' || c == 'l') {
+      Serial.println("Attempting single-record timestamp read...");
+      rx8xxx::RX8111TimestampRecord latest_record;
+      if (rtc.read_latest_event_timestamp(&latest_record)) {
+        print_timestamp_record("Latest timestamp: ", latest_record);
+      } else {
+        Serial.println("No latest timestamp available, or the library is in buffered timestamp mode.");
+      }
+    }
   }
 }
 
@@ -445,7 +519,11 @@ void loop() {
 // 3. Remove RX8111-only features:
 //      - set_alarm_second() — RX8130CE has no second alarm register.
 //        supports_alarm_second() returns false on RX8130CE.
-//      - set_timestamp_enabled() — RX8130CE has no timestamp engine.
+//      - set_timestamp_enabled(), set_timestamp_record_mode(),
+//        set_event_level(), set_event_enabled(), set_evin_filter(),
+//        set_evin_pull() — RX8130CE has no EVIN timestamp engine.
+//      - clear_event_flag(), read_latest_event_timestamp(),
+//        drain_buffered_event_timestamps(), clear_timestamp_buffer() — not available.
 //      - xst_flag(), battery_low(), evin_state() — not available.
 //
 // 4. Use RX8130-specific features instead:

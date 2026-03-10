@@ -76,6 +76,15 @@ bool RX8XXXComponent::clear_timer_flag_() {
   return this->write_byte(this->flag_reg_addr_(), flags);
 }
 
+bool RX8XXXComponent::clear_event_flag_() {
+  const uint8_t evf_mask = this->event_flag_mask_();
+  if (evf_mask == 0) return true;  // chip has no EVF (e.g. RX8130CE)
+  uint8_t flags = 0;
+  if (!this->read_byte(this->flag_reg_addr_(), &flags)) return false;
+  flags &= ~evf_mask;
+  return this->write_byte(this->flag_reg_addr_(), flags);
+}
+
 // ---------------------------------------------------------------------------
 // setup()
 // ---------------------------------------------------------------------------
@@ -116,13 +125,23 @@ void RX8XXXComponent::setup() {
     ESP_LOGW(TAG, "Timer disable failed");
   }
 
-  // 6. Apply optional model-specific runtime options (e.g. RX8111 timestamp).
+  // 6. Configure EVIN event interrupt, or explicitly disable it if omitted.
+  if (this->event_enabled_) {
+    if (!this->configure_event_()) {
+      ESP_LOGW(TAG, "Event configuration failed");
+    }
+  } else if (!this->disable_event_()) {
+    ESP_LOGW(TAG, "Event disable failed");
+  }
+
+  // 7. Apply optional model-specific runtime options (e.g. RX8111 timestamp).
   if (!this->apply_runtime_options_()) {
     ESP_LOGW(TAG, "Model-specific runtime options failed");
   }
 
-  // 7. Attempt an initial time read.
+  // 8. Attempt an initial time read.
   this->read_time();
+  this->after_initial_time_read_();
 }
 
 // ---------------------------------------------------------------------------
@@ -136,8 +155,12 @@ void RX8XXXComponent::setup() {
 //     /INT pin auto-releases in hardware after tRTN regardless of TF. Calling
 //     rx8xxx.clear_timer_flag is only needed to re-arm the on_timer edge detection
 //     for the next event — it has no effect on the /INT pin.
-//   - on_alarm / on_timer callbacks fire only on the 0->1 rising edge so they
-//     trigger exactly once per event, not on every poll while the flag stays set.
+//   - EVF (event flag) behaves the same as AF: held until clear_event_flag is
+//     called. /INT is held low while EVF is set (if EIE is enabled). Clearing
+//     EVF releases /INT from the event, but not from AF or TF if those are set.
+//   - on_alarm / on_timer / on_event callbacks fire only on the 0->1 rising
+//     edge so they trigger exactly once per event, not on every poll while the
+//     flag stays set.
 // ---------------------------------------------------------------------------
 void RX8XXXComponent::update() {
   this->read_time();
@@ -168,6 +191,17 @@ void RX8XXXComponent::update() {
 
   this->prev_alarm_flag_ = alarm_set;
   this->prev_timer_flag_ = timer_set;
+
+  // EVF polling (only on chips that have it, e.g. RX8111CE).
+  const uint8_t evf_mask = this->event_flag_mask_();
+  if (evf_mask != 0) {
+    const bool event_set = (flag_byte & evf_mask) != 0;
+    if (this->event_flag_sensor_ != nullptr)
+      this->event_flag_sensor_->publish_state(event_set);
+    if (event_set && !this->prev_event_flag_)
+      for (auto *t : this->event_triggers_) t->trigger();
+    this->prev_event_flag_ = event_set;
+  }
 
   // Let each subclass publish its own chip-specific binary sensors.
   this->update_chip_binary_sensors_(flag_byte);
@@ -200,9 +234,14 @@ void RX8XXXComponent::dump_config() {
   if (this->timer_enabled_) {
     ESP_LOGCONFIG(TAG, "  Timer: enabled (count=%" PRIu32 ")", this->timer_count_);
   }
+  if (this->event_enabled_) {
+    ESP_LOGCONFIG(TAG, "  Event: enabled (%s level)",
+                  this->event_level_ == EVENT_LEVEL_HIGH ? "high" : "low");
+  }
   LOG_BINARY_SENSOR("  ", "VLF",        this->vlf_sensor_);
   LOG_BINARY_SENSOR("  ", "Alarm Flag", this->alarm_flag_sensor_);
   LOG_BINARY_SENSOR("  ", "Timer Flag", this->timer_flag_sensor_);
+  LOG_BINARY_SENSOR("  ", "Event Flag", this->event_flag_sensor_);
   RealTimeClock::dump_config();
 }
 

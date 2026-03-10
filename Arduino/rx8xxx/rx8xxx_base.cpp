@@ -75,6 +75,15 @@ bool RX8xxxBase::clear_timer_flag() {
   return this->i2c_write_byte(this->flag_reg_addr(), flags);
 }
 
+bool RX8xxxBase::clear_event_flag() {
+  const uint8_t evf_mask = this->event_flag_mask();
+  if (evf_mask == 0) return true;  // chip has no EVF (e.g. RX8130CE)
+  uint8_t flags = 0;
+  if (!this->i2c_read_byte(this->flag_reg_addr(), &flags)) return false;
+  flags &= ~evf_mask;
+  return this->i2c_write_byte(this->flag_reg_addr(), flags);
+}
+
 // ---------------------------------------------------------------------------
 // begin()
 // ---------------------------------------------------------------------------
@@ -114,7 +123,16 @@ bool RX8xxxBase::begin() {
     RX8_LOG(RX8_LOG_WARN, TAG, "Timer disable failed");
   }
 
-  // 6. Apply optional model-specific runtime options (e.g. RX8111 timestamp).
+  // 6. Configure EVIN event interrupt, or explicitly disable it if omitted.
+  if (this->event_enabled_) {
+    if (!this->configure_event()) {
+      RX8_LOG(RX8_LOG_WARN, TAG, "Event configuration failed");
+    }
+  } else if (!this->disable_event()) {
+    RX8_LOG(RX8_LOG_WARN, TAG, "Event disable failed");
+  }
+
+  // 7. Apply optional model-specific runtime options (e.g. RX8111 timestamp).
   if (!this->apply_runtime_options()) {
     RX8_LOG(RX8_LOG_WARN, TAG, "Model-specific runtime options failed");
   }
@@ -135,15 +153,20 @@ bool RX8xxxBase::poll_flags(RX8xxxFlags *out) {
   const bool alarm_set = (flag_byte & this->alarm_flag_mask()) != 0;
   const bool timer_set = (flag_byte & this->timer_flag_mask()) != 0;
   const bool vlf_set   = (flag_byte & this->vlf_flag_mask()) != 0;
+  const uint8_t evf_mask = this->event_flag_mask();
+  const bool event_set = evf_mask != 0 && (flag_byte & evf_mask) != 0;
 
   out->vlf        = vlf_set;
   out->alarm_flag = alarm_set;
   out->timer_flag = timer_set;
+  out->event_flag = event_set;
   out->alarm_edge = alarm_set && !this->prev_alarm_flag_;
   out->timer_edge = timer_set && !this->prev_timer_flag_;
+  out->event_edge = event_set && !this->prev_event_flag_;
 
   this->prev_alarm_flag_ = alarm_set;
   this->prev_timer_flag_ = timer_set;
+  this->prev_event_flag_ = event_set;
 
   // Let each subclass read its own chip-specific status.
   this->read_chip_status(flag_byte);

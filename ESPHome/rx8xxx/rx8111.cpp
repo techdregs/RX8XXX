@@ -1,17 +1,135 @@
 #include "rx8111.h"
 #include "esphome/core/log.h"
 
+#include <cstdio>
+
 namespace esphome {
 namespace rx8xxx {
 
 static const char *const TAG = "rx8111";
+
+namespace {
+
+struct DecodedTimestampRecord {
+  uint16_t year;
+  uint8_t month;
+  uint8_t day;
+  uint8_t hour;
+  uint8_t minute;
+  uint8_t second;
+  uint16_t milliseconds;
+  bool vlow;
+  bool vcmp;
+  bool vdet;
+  bool xst;
+};
+
+bool decode_bcd_(uint8_t value, uint8_t max_value, uint8_t *decoded) {
+  const uint8_t ones = value & 0x0F;
+  const uint8_t tens = (value >> 4) & 0x0F;
+  if (ones > 9 || tens > 9) {
+    return false;
+  }
+
+  const uint8_t result = tens * 10 + ones;
+  if (result > max_value) {
+    return false;
+  }
+
+  *decoded = result;
+  return true;
+}
+
+bool decode_timestamp_fields_(uint8_t sec_raw, uint8_t min_raw, uint8_t hour_raw, uint8_t day_raw, uint8_t month_raw,
+                              uint8_t year_raw, uint8_t status_raw, uint16_t milliseconds,
+                              DecodedTimestampRecord *record) {
+  uint8_t second = 0;
+  uint8_t minute = 0;
+  uint8_t hour = 0;
+  uint8_t day = 0;
+  uint8_t month = 0;
+  uint8_t year = 0;
+
+  if (!decode_bcd_(sec_raw & 0x7F, 59, &second) || !decode_bcd_(min_raw & 0x7F, 59, &minute) ||
+      !decode_bcd_(hour_raw & 0x3F, 23, &hour) || !decode_bcd_(day_raw & 0x3F, 31, &day) ||
+      !decode_bcd_(month_raw & 0x1F, 12, &month) || !decode_bcd_(year_raw, 99, &year) || day == 0 || month == 0) {
+    return false;
+  }
+
+  record->year = static_cast<uint16_t>(2000 + year);
+  record->month = month;
+  record->day = day;
+  record->hour = hour;
+  record->minute = minute;
+  record->second = second;
+  record->milliseconds = milliseconds;
+  record->vlow = (status_raw & 0x20) != 0;
+  record->vcmp = (status_raw & 0x10) != 0;
+  record->vdet = (status_raw & 0x08) != 0;
+  record->xst = (status_raw & 0x02) != 0;
+  return true;
+}
+
+bool decode_single_timestamp_record_(const std::array<uint8_t, 10> &raw, DecodedTimestampRecord *record) {
+  const uint16_t fractional_1024 =
+      static_cast<uint16_t>((static_cast<uint16_t>(raw[1]) << 2) | (raw[0] & 0x03));
+  const uint16_t milliseconds = static_cast<uint16_t>((fractional_1024 * 1000U + 512U) / 1024U);
+
+  return decode_timestamp_fields_(raw[2], raw[3], raw[4], raw[6], raw[7], raw[8], raw[9], milliseconds, record);
+}
+
+bool decode_buffered_timestamp_record_(const std::array<uint8_t, 8> &raw, DecodedTimestampRecord *record) {
+  const uint16_t milliseconds = static_cast<uint16_t>((static_cast<uint16_t>(raw[0]) * 1000U + 128U) / 256U);
+  return decode_timestamp_fields_(raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7], milliseconds, record);
+}
+
+void format_timestamp_utc_(const DecodedTimestampRecord &record, char *buffer, size_t buffer_len) {
+  std::snprintf(buffer, buffer_len, "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", record.year, record.month, record.day,
+                record.hour, record.minute, record.second, record.milliseconds);
+}
+
+const char *timestamp_record_mode_to_string_(TimestampRecordMode mode) {
+  switch (mode) {
+    case TIMESTAMP_RECORD_LATEST:
+      return "latest";
+    case TIMESTAMP_RECORD_STOP_WHEN_FULL:
+      return "stop_when_full";
+    case TIMESTAMP_RECORD_OVERWRITE:
+      return "overwrite";
+    default:
+      return "unknown";
+  }
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // dump_config
 // ---------------------------------------------------------------------------
 void RX8111Component::dump_config() {
   this->RX8XXXComponent::dump_config();
-  ESP_LOGCONFIG(TAG, "  Time Stamp: %s", ONOFF(this->timestamp_enabled_));
+  ESP_LOGCONFIG(TAG, "  Timestamp Capture: %s", ONOFF(this->timestamp_capture_active_()));
+  if (this->timestamp_capture_active_()) {
+    ESP_LOGCONFIG(TAG, "  Timestamp Record Mode: %s", timestamp_record_mode_to_string_(this->timestamp_record_mode_));
+  }
+  if (this->event_timestamp_sensor_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Event Timestamp Sensor: configured");
+  }
+  if (this->event_enabled_ || this->timestamp_capture_active_()) {
+    static const char *const FILTER_NAMES[] = {"off", "3.9ms", "15.6ms", "125ms"};
+    ESP_LOGCONFIG(TAG, "  EVIN Event Level: %s",
+                  this->event_level_ == EVENT_LEVEL_HIGH ? "high" : "low");
+    ESP_LOGCONFIG(TAG, "  EVIN Filter: %s (level %u)", FILTER_NAMES[this->evin_filter_], this->evin_filter_);
+    const char *pull_str = "none (Hi-Z)";
+    switch (this->evin_pull_) {
+      case EVIN_PULL_UP_500K:    pull_str = "pull-up 500k"; break;
+      case EVIN_PULL_UP_1M:      pull_str = "pull-up 1M"; break;
+      case EVIN_PULL_UP_10M:     pull_str = "pull-up 10M"; break;
+      case EVIN_PULL_DOWN_500K:  pull_str = "pull-down 500k"; break;
+      default: break;
+    }
+    ESP_LOGCONFIG(TAG, "  EVIN Pull: %s", pull_str);
+  }
   binary_sensor::log_binary_sensor(TAG, "  ", "XST (Crystal Stop)", this->xst_sensor_);
   binary_sensor::log_binary_sensor(TAG, "  ", "Battery Low (VLOW)", this->battery_low_sensor_);
   binary_sensor::log_binary_sensor(TAG, "  ", "EVIN State", this->evin_sensor_);
@@ -247,22 +365,232 @@ bool RX8111Component::disable_timer_() {
 }
 
 // ---------------------------------------------------------------------------
+// configure_event_
+//
+// Enables EIE so that a latched EVF pulls /INT low. EVIN level/filter/pull and
+// timestamp mode bits are applied centrally from apply_runtime_options_().
+// ---------------------------------------------------------------------------
+bool RX8111Component::configure_event_() {
+  uint8_t ctrl = 0;
+  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl)) return false;
+  ctrl |= RX8111_CTRL_EIE;
+  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// disable_event_
+//
+// Disables EIE without touching EVF. ETS and EVIN routing are handled by the
+// runtime timestamp configuration so timestamp capture can stay active without
+// asserting /INT.
+// ---------------------------------------------------------------------------
+bool RX8111Component::disable_event_() {
+  uint8_t ctrl = 0;
+  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl)) return false;
+  ctrl &= ~RX8111_CTRL_EIE;
+  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // apply_runtime_options_
 //
-// Applies RX8111-specific runtime options. Currently only timestamp engine.
+// Applies RX8111-specific timestamp routing and EVIN settings. ETS must remain
+// set if either event detection or timestamp capture is active.
 // ---------------------------------------------------------------------------
 bool RX8111Component::apply_runtime_options_() {
   uint8_t ext = 0;
   if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
 
-  if (this->timestamp_enabled_) {
+  if (this->timestamp_capture_active_() || this->event_enabled_) {
     ext |= RX8111_EXT_ETS;
   } else {
     ext &= ~RX8111_EXT_ETS;
   }
 
   if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  return this->write_timestamp_mode_bits_();
+}
+
+bool RX8111Component::timestamp_capture_active_() const {
+  return this->timestamp_enabled_ || this->event_timestamp_sensor_ != nullptr;
+}
+
+bool RX8111Component::buffered_timestamp_mode_() const {
+  return this->timestamp_record_mode_ != TIMESTAMP_RECORD_LATEST;
+}
+
+bool RX8111Component::write_timestamp_mode_bits_() {
+  uint8_t tsctrl1 = 0;
+  if (!this->read_byte(RX8111_REG_TSCTRL1, &tsctrl1)) return false;
+
+  tsctrl1 &= ~(RX8111_TSCTRL1_EISEL | RX8111_TSCTRL1_TSCLR | RX8111_TSCTRL1_TSRAM);
+  if (this->timestamp_capture_active_() && this->buffered_timestamp_mode_()) {
+    tsctrl1 |= RX8111_TSCTRL1_TSRAM;
+  }
+
+  if (!this->write_byte(RX8111_REG_TSCTRL1, tsctrl1)) return false;
+
+  uint8_t evin_reg = 0;
+  if (this->event_enabled_ || this->timestamp_capture_active_()) {
+    if (this->event_level_ == EVENT_LEVEL_HIGH) {
+      evin_reg |= RX8111_EVIN_EHL;
+    }
+
+    evin_reg |= (this->evin_filter_ << RX8111_EVIN_ET_SHIFT) & RX8111_EVIN_ET_MASK;
+
+    switch (this->evin_pull_) {
+      case EVIN_PULL_NONE:
+        break;
+      case EVIN_PULL_UP_500K:
+        evin_reg |= RX8111_EVIN_PU0;
+        break;
+      case EVIN_PULL_UP_1M:
+        evin_reg |= RX8111_EVIN_PU1;
+        break;
+      case EVIN_PULL_UP_10M:
+        evin_reg |= RX8111_EVIN_PU1 | RX8111_EVIN_PU0;
+        break;
+      case EVIN_PULL_DOWN_500K:
+        evin_reg |= RX8111_EVIN_PDN;
+        break;
+    }
+
+    if (this->timestamp_capture_active_() && this->timestamp_record_mode_ == TIMESTAMP_RECORD_OVERWRITE) {
+      evin_reg |= RX8111_EVIN_OVW;
+    }
+  }
+
+  return this->write_byte(RX8111_REG_EVIN_SETTING, evin_reg);
+}
+
+bool RX8111Component::clear_timestamp_ram_() {
+  uint8_t ext = 0;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
+
+  const bool restore_ets = (ext & RX8111_EXT_ETS) != 0;
+  if (restore_ets) {
+    ext &= ~RX8111_EXT_ETS;
+    if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  }
+
+  uint8_t tsctrl1 = 0;
+  if (!this->read_byte(RX8111_REG_TSCTRL1, &tsctrl1)) return false;
+  tsctrl1 |= RX8111_TSCTRL1_TSCLR;
+  if (!this->write_byte(RX8111_REG_TSCTRL1, tsctrl1)) return false;
+
+  if (restore_ets) {
+    ext |= RX8111_EXT_ETS;
+    if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  }
+
   return true;
+}
+
+void RX8111Component::after_initial_time_read_() {
+  // On startup, read any pre-existing timestamps unconditionally (pass 0xFF to bypass EVF check).
+  if (this->event_timestamp_sensor_ != nullptr && !this->publish_timestamp_records_(0xFF)) {
+    ESP_LOGW(TAG, "Failed to publish startup event timestamps");
+  }
+}
+
+bool RX8111Component::publish_timestamp_records_(uint8_t flag_byte) {
+  if (this->event_timestamp_sensor_ == nullptr) {
+    return true;
+  }
+
+  // In latest mode, skip the read (and ETS toggle) if EVF isn't set and we
+  // already have a cached timestamp — nothing new to publish.
+  if (!this->buffered_timestamp_mode_()) {
+    const bool evf_set = (flag_byte & RX8111_FLAG_EVF) != 0;
+    if (!evf_set && this->has_last_latest_timestamp_) {
+      return true;
+    }
+  } else {
+    // In buffered mode, check TSEMP before touching ETS.  Reading TSCTRL3
+    // does not require disabling ETS.
+    uint8_t tsctrl3 = 0;
+    if (!this->read_byte(RX8111_REG_TSCTRL3, &tsctrl3)) return false;
+    if ((tsctrl3 & RX8111_TSCTRL3_TSEMP) != 0) {
+      return true;  // buffer empty, nothing to do
+    }
+  }
+
+  uint8_t ext = 0;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
+
+  const bool restore_ets = (ext & RX8111_EXT_ETS) != 0;
+  if (restore_ets) {
+    ext &= ~RX8111_EXT_ETS;
+    if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  }
+
+  bool ok = true;
+  if (!this->buffered_timestamp_mode_()) {
+    std::array<uint8_t, 10> raw{};
+    if (!this->read_bytes(RX8111_REG_TIMESTAMP_SINGLE, raw.data(), raw.size())) {
+      ok = false;
+    } else if (!this->has_last_latest_timestamp_ || raw != this->last_latest_timestamp_raw_) {
+      DecodedTimestampRecord record{};
+      if (decode_single_timestamp_record_(raw, &record)) {
+        char timestamp_value[32];
+        format_timestamp_utc_(record, timestamp_value, sizeof(timestamp_value));
+        this->event_timestamp_sensor_->publish_state(timestamp_value);
+        this->last_latest_timestamp_raw_ = raw;
+        this->has_last_latest_timestamp_ = true;
+        ESP_LOGD(TAG, "Published latest event timestamp %s (VLOW=%d VCMP=%d VDET=%d XST=%d)", timestamp_value,
+                 record.vlow, record.vcmp, record.vdet, record.xst);
+      } else {
+        this->last_latest_timestamp_raw_ = raw;
+        this->has_last_latest_timestamp_ = true;
+        ESP_LOGW(TAG, "Skipping invalid latest timestamp record");
+      }
+    }
+  } else {
+    uint8_t tsctrl3 = 0;
+    if (!this->read_byte(RX8111_REG_TSCTRL3, &tsctrl3)) {
+      ok = false;
+    } else if ((tsctrl3 & RX8111_TSCTRL3_TSEMP) == 0) {
+      const bool is_full = (tsctrl3 & RX8111_TSCTRL3_TSFULL) != 0;
+      const uint8_t latest_index = tsctrl3 & RX8111_TSCTRL3_TSAD_MASK;
+      const uint8_t record_count = is_full ? 8 : static_cast<uint8_t>(latest_index + 1);
+      const uint8_t first_index = is_full ? static_cast<uint8_t>((latest_index + 1) & 0x07) : 0;
+
+      for (uint8_t offset = 0; offset < record_count; offset++) {
+        const uint8_t slot = static_cast<uint8_t>((first_index + offset) & 0x07);
+        std::array<uint8_t, 8> raw{};
+        const uint8_t base = static_cast<uint8_t>(RX8111_REG_TIMESTAMP_MULTI + slot * 8);
+        if (!this->read_bytes(base, raw.data(), raw.size())) {
+          ok = false;
+          break;
+        }
+
+        DecodedTimestampRecord record{};
+        if (!decode_buffered_timestamp_record_(raw, &record)) {
+          ESP_LOGW(TAG, "Skipping invalid buffered timestamp record in slot %u", slot);
+          continue;
+        }
+
+        char timestamp_value[32];
+        format_timestamp_utc_(record, timestamp_value, sizeof(timestamp_value));
+        this->event_timestamp_sensor_->publish_state(timestamp_value);
+        ESP_LOGD(TAG, "Published buffered event timestamp %s from slot %u (VLOW=%d VCMP=%d VDET=%d XST=%d)",
+                 timestamp_value, slot, record.vlow, record.vcmp, record.vdet, record.xst);
+      }
+
+      if (ok && !this->clear_timestamp_ram_()) {
+        ok = false;
+      }
+    }
+  }
+
+  if (restore_ets) {
+    ext |= RX8111_EXT_ETS;
+    if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  }
+
+  return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +618,10 @@ void RX8111Component::update_chip_binary_sensors_(uint8_t flag_byte) {
     } else {
       ESP_LOGW(TAG, "Failed to read status monitor register");
     }
+  }
+
+  if (this->event_timestamp_sensor_ != nullptr && !this->publish_timestamp_records_(flag_byte)) {
+    ESP_LOGW(TAG, "Failed to publish event timestamp records");
   }
 }
 

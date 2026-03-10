@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
@@ -53,6 +55,34 @@ enum TimerClock : uint8_t {
 };
 
 // ---------------------------------------------------------------------------
+// EVIN level selection (EHL bit in the EVIN Setting register, RX8111CE only)
+// ---------------------------------------------------------------------------
+enum EventLevel : uint8_t {
+  EVENT_LEVEL_LOW  = 0,  ///< Trigger when EVIN is low for at least the filter period
+  EVENT_LEVEL_HIGH = 1,  ///< Trigger when EVIN is high for at least the filter period
+};
+
+// ---------------------------------------------------------------------------
+// RX8111 timestamp record storage mode
+// ---------------------------------------------------------------------------
+enum TimestampRecordMode : uint8_t {
+  TIMESTAMP_RECORD_LATEST         = 0,  ///< Keep only the latest event time in 0x20-0x29
+  TIMESTAMP_RECORD_STOP_WHEN_FULL = 1,  ///< Store up to 8 records in RAM then stop
+  TIMESTAMP_RECORD_OVERWRITE      = 2,  ///< Store up to 8 records and wrap when full
+};
+
+// ---------------------------------------------------------------------------
+// EVIN pull-up/pull-down selection (PDN, PU1, PU0 in EVIN Setting register 0x2B)
+// ---------------------------------------------------------------------------
+enum EvinPull : uint8_t {
+  EVIN_PULL_NONE        = 0,  ///< Hi-Z (no connection)
+  EVIN_PULL_UP_500K     = 1,  ///< Pull-up 500 kOhm (to VOUT)
+  EVIN_PULL_UP_1M       = 2,  ///< Pull-up 1 MOhm (to VOUT)
+  EVIN_PULL_UP_10M      = 3,  ///< Pull-up 10 MOhm (to VOUT)
+  EVIN_PULL_DOWN_500K   = 4,  ///< Pull-down 500 kOhm (to GND)
+};
+
+// ---------------------------------------------------------------------------
 // RX8XXXComponent - abstract base class
 // ---------------------------------------------------------------------------
 class RX8XXXComponent : public time::RealTimeClock, public i2c::I2CDevice {
@@ -84,10 +114,17 @@ class RX8XXXComponent : public time::RealTimeClock, public i2c::I2CDevice {
   void set_timer_clock(TimerClock clk) { this->timer_clock_ = clk; }
   void set_timer_enabled(bool enable) { this->timer_enabled_ = enable; }
 
+  // EVIN event configuration (RX8111CE only)
+  void set_event_level(EventLevel level) { this->event_level_ = level; }
+  void set_event_enabled(bool enable) { this->event_enabled_ = enable; }
+  void set_evin_filter(uint8_t level) { this->evin_filter_ = level; }
+  void set_evin_pull(EvinPull pull) { this->evin_pull_ = pull; }
+
   // ---- Binary sensor setters (common to both chips) -----------------------
   void set_vlf_binary_sensor(binary_sensor::BinarySensor *s) { this->vlf_sensor_ = s; }
   void set_alarm_flag_binary_sensor(binary_sensor::BinarySensor *s) { this->alarm_flag_sensor_ = s; }
   void set_timer_flag_binary_sensor(binary_sensor::BinarySensor *s) { this->timer_flag_sensor_ = s; }
+  void set_event_flag_binary_sensor(binary_sensor::BinarySensor *s) { this->event_flag_sensor_ = s; }
 
   // ---- Callbacks (fire on rising-edge flag transition 0->1) ---------------
   // ESPHome's Python codegen passes a Trigger<>* for each on_alarm/on_timer
@@ -98,10 +135,14 @@ class RX8XXXComponent : public time::RealTimeClock, public i2c::I2CDevice {
   void add_on_timer_callback(Trigger<> *trigger) {
     this->timer_triggers_.push_back(trigger);
   }
+  void add_on_event_callback(Trigger<> *trigger) {
+    this->event_triggers_.push_back(trigger);
+  }
 
   // ---- Explicit flag-clear actions (called from user automations) ----------
   void clear_alarm_flag() { this->clear_alarm_flag_(); }
   void clear_timer_flag() { this->clear_timer_flag_(); }
+  void clear_event_flag() { this->clear_event_flag_(); }
 
   // ---- Runtime alarm programming -------------------------------------------
   // Sentinel values (0xFF) mean "field disabled / not specified".
@@ -121,6 +162,7 @@ class RX8XXXComponent : public time::RealTimeClock, public i2c::I2CDevice {
   virtual uint8_t stop_bit_mask_() = 0;
   virtual uint8_t alarm_flag_mask_() = 0;
   virtual uint8_t timer_flag_mask_() = 0;
+  virtual uint8_t event_flag_mask_() { return 0; }  // RX8130CE has no EVF
   virtual bool supports_alarm_second_() const { return false; }
 
   // ---- Chip-specific operations -------------------------------------------
@@ -131,13 +173,19 @@ class RX8XXXComponent : public time::RealTimeClock, public i2c::I2CDevice {
   virtual bool configure_timer_() = 0;
   virtual bool disable_alarm_() = 0;
   virtual bool disable_timer_() = 0;
+  virtual bool configure_event_() { return true; }
+  virtual bool disable_event_() { return true; }
   virtual bool apply_runtime_options_() { return true; }
   bool clear_alarm_flag_();
   bool clear_timer_flag_();
+  bool clear_event_flag_();
 
   /// Called from update() after reading the flag register.
   /// Subclasses publish any chip-specific binary sensors here.
   virtual void update_chip_binary_sensors_(uint8_t flag_byte) {}
+
+  /// Called from setup() after the initial RTC time read.
+  virtual void after_initial_time_read_() {}
 
   virtual const char *model_name_() = 0;
 
@@ -169,18 +217,26 @@ class RX8XXXComponent : public time::RealTimeClock, public i2c::I2CDevice {
   uint32_t timer_count_{0};
   TimerClock timer_clock_{TimerClock::TIMER_1_HZ};
 
+  bool event_enabled_{false};
+  EventLevel event_level_{EVENT_LEVEL_LOW};
+  uint8_t evin_filter_{0};
+  EvinPull evin_pull_{EVIN_PULL_NONE};
+
   // ---- Binary sensor sub-component pointers --------------------------------
   binary_sensor::BinarySensor *vlf_sensor_{nullptr};
   binary_sensor::BinarySensor *alarm_flag_sensor_{nullptr};
   binary_sensor::BinarySensor *timer_flag_sensor_{nullptr};
+  binary_sensor::BinarySensor *event_flag_sensor_{nullptr};
 
   // ---- Edge-detection state (to fire callbacks only on 0->1 transition) ----
   bool prev_alarm_flag_{false};
   bool prev_timer_flag_{false};
+  bool prev_event_flag_{false};
 
   // ---- Automation triggers -------------------------------------------------
   std::vector<Trigger<> *> alarm_triggers_;
   std::vector<Trigger<> *> timer_triggers_;
+  std::vector<Trigger<> *> event_triggers_;
 };
 
 // ---------------------------------------------------------------------------
@@ -188,6 +244,7 @@ class RX8XXXComponent : public time::RealTimeClock, public i2c::I2CDevice {
 // ---------------------------------------------------------------------------
 class AlarmTrigger : public Trigger<> {};
 class TimerTrigger : public Trigger<> {};
+class EventTrigger : public Trigger<> {};
 
 template<typename... Ts>
 class SetAlarmAction : public Action<Ts...>, public Parented<RX8XXXComponent> {
@@ -316,6 +373,12 @@ template<typename... Ts>
 class ClearTimerFlagAction : public Action<Ts...>, public Parented<RX8XXXComponent> {
  public:
   void play(const Ts &...x) override { this->parent_->clear_timer_flag(); }
+};
+
+template<typename... Ts>
+class ClearEventFlagAction : public Action<Ts...>, public Parented<RX8XXXComponent> {
+ public:
+  void play(const Ts &...x) override { this->parent_->clear_event_flag(); }
 };
 
 }  // namespace rx8xxx

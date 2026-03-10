@@ -10,20 +10,19 @@ import logging
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
-from esphome.components import binary_sensor, i2c, time
+from esphome.components import binary_sensor, i2c, text_sensor, time
 from esphome.const import (
     CONF_ID,
     CONF_MODEL,
     CONF_TRIGGER_ID,
     DEVICE_CLASS_BATTERY,
     DEVICE_CLASS_PROBLEM,
-    DEVICE_CLASS_RUNNING,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 DEPENDENCIES = ["i2c"]
-AUTO_LOAD = ["binary_sensor"]
+AUTO_LOAD = ["binary_sensor", "text_sensor"]
 
 # ---------------------------------------------------------------------------
 # Namespace / class references
@@ -38,14 +37,19 @@ WriteAction          = rx8xxx_ns.class_("WriteAction",          automation.Actio
 ReadAction           = rx8xxx_ns.class_("ReadAction",           automation.Action)
 ClearAlarmFlagAction = rx8xxx_ns.class_("ClearAlarmFlagAction", automation.Action)
 ClearTimerFlagAction = rx8xxx_ns.class_("ClearTimerFlagAction", automation.Action)
+ClearEventFlagAction = rx8xxx_ns.class_("ClearEventFlagAction", automation.Action)
 SetAlarmAction      = rx8xxx_ns.class_("SetAlarmAction", automation.Action)
 ScheduleAlarmInAction = rx8xxx_ns.class_("ScheduleAlarmInAction", automation.Action)
 
 AlarmTrigger = rx8xxx_ns.class_("AlarmTrigger", automation.Trigger.template())
 TimerTrigger = rx8xxx_ns.class_("TimerTrigger", automation.Trigger.template())
+EventTrigger = rx8xxx_ns.class_("EventTrigger", automation.Trigger.template())
 
 FoutFrequency = rx8xxx_ns.enum("FoutFrequency")
 TimerClock    = rx8xxx_ns.enum("TimerClock")
+EventLevel    = rx8xxx_ns.enum("EventLevel")
+TimestampRecordMode = rx8xxx_ns.enum("TimestampRecordMode")
+EvinPull      = rx8xxx_ns.enum("EvinPull")
 
 # ---------------------------------------------------------------------------
 # Configuration key constants
@@ -67,6 +71,13 @@ CONF_TIMER_CLOCK = "timer_clock"
 CONF_TIMER_ENABLED = "timer_enabled"
 CONF_ON_TIMER    = "on_timer"
 
+CONF_EVENT_LEVEL   = "event_level"
+CONF_EVENT_ENABLED = "event_enabled"
+CONF_ON_EVENT      = "on_event"
+CONF_EVENT_FLAG    = "event_flag"
+CONF_EVIN_FILTER   = "evin_filter"
+CONF_EVIN_PULL     = "evin_pull"
+
 CONF_VLF        = "vlf"
 CONF_ALARM_FLAG = "alarm_flag"
 CONF_TIMER_FLAG = "timer_flag"
@@ -78,6 +89,8 @@ CONF_EVIN        = "evin"
 CONF_VBLF = "vblf"
 
 CONF_TIMESTAMP      = "timestamp_enabled"
+CONF_TIMESTAMP_RECORD_MODE = "timestamp_record_mode"
+CONF_EVENT_TIMESTAMP = "event_timestamp"
 CONF_DIGITAL_OFFSET = "digital_offset"
 CONF_SECOND = "second"
 CONF_MINUTE = "minute"
@@ -132,6 +145,25 @@ TIMER_CLOCK_MAP = {
     "1hz":      TimerClock.TIMER_1_HZ,
     "1_60hz":   TimerClock.TIMER_1_60_HZ,
     "1_3600hz": TimerClock.TIMER_1_3600_HZ,  # RX8130CE only; validated below
+}
+
+EVENT_LEVEL_MAP = {
+    "low":  EventLevel.EVENT_LEVEL_LOW,
+    "high": EventLevel.EVENT_LEVEL_HIGH,
+}
+
+TIMESTAMP_RECORD_MODE_MAP = {
+    "latest": TimestampRecordMode.TIMESTAMP_RECORD_LATEST,
+    "stop_when_full": TimestampRecordMode.TIMESTAMP_RECORD_STOP_WHEN_FULL,
+    "overwrite": TimestampRecordMode.TIMESTAMP_RECORD_OVERWRITE,
+}
+
+EVIN_PULL_MAP = {
+    "none":           EvinPull.EVIN_PULL_NONE,
+    "pullup_500k":    EvinPull.EVIN_PULL_UP_500K,
+    "pullup_1m":      EvinPull.EVIN_PULL_UP_1M,
+    "pullup_10m":     EvinPull.EVIN_PULL_UP_10M,
+    "pulldown_500k":  EvinPull.EVIN_PULL_DOWN_500K,
 }
 
 
@@ -221,10 +253,24 @@ def _validate_config(config):
          "RX8111CE. The RX8130CE does not have a seconds alarm register."),
         (CONF_TIMESTAMP, "RX8111CE",
          "'timestamp_enabled' is only available on the RX8111CE"),
+        (CONF_TIMESTAMP_RECORD_MODE, "RX8111CE",
+         "'timestamp_record_mode' is only available on the RX8111CE"),
+        (CONF_EVENT_TIMESTAMP, "RX8111CE",
+         "'event_timestamp' text sensor is only available on the RX8111CE"),
         (CONF_XST, "RX8111CE",
          "'xst' binary sensor is only available on the RX8111CE"),
         (CONF_EVIN, "RX8111CE",
          "'evin' binary sensor is only available on the RX8111CE"),
+        (CONF_EVENT_LEVEL, "RX8111CE",
+         "'event_level' (EVIN event detection level) is only available on the RX8111CE"),
+        (CONF_EVENT_FLAG, "RX8111CE",
+         "'event_flag' binary sensor is only available on the RX8111CE"),
+        (CONF_ON_EVENT, "RX8111CE",
+         "'on_event' trigger is only available on the RX8111CE"),
+        (CONF_EVIN_FILTER, "RX8111CE",
+         "'evin_filter' is only available on the RX8111CE"),
+        (CONF_EVIN_PULL, "RX8111CE",
+         "'evin_pull' is only available on the RX8111CE"),
         (CONF_DIGITAL_OFFSET, "RX8130CE",
          "'digital_offset' is only available on the RX8130CE"),
         (CONF_VBLF, "RX8130CE",
@@ -319,6 +365,15 @@ CONFIG_SCHEMA = cv.All(
                 {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(TimerTrigger)}
             ),
 
+            # ---- EVIN event detection (RX8111CE only) --------------------
+            cv.Optional(CONF_EVENT_LEVEL): cv.enum(EVENT_LEVEL_MAP, lower=True),
+            cv.Optional(CONF_EVENT_ENABLED): cv.boolean,
+            cv.Optional(CONF_ON_EVENT): automation.validate_automation(
+                {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(EventTrigger)}
+            ),
+            cv.Optional(CONF_EVIN_FILTER): cv.int_range(min=0, max=3),
+            cv.Optional(CONF_EVIN_PULL): cv.enum(EVIN_PULL_MAP, lower=True),
+
             # ---- Binary sensor sub-components (common) --------------------
             cv.Optional(CONF_VLF): binary_sensor.binary_sensor_schema(
                 device_class=DEVICE_CLASS_PROBLEM,
@@ -334,6 +389,7 @@ CONFIG_SCHEMA = cv.All(
                 device_class=DEVICE_CLASS_BATTERY,
             ),
             cv.Optional(CONF_EVIN): binary_sensor.binary_sensor_schema(),
+            cv.Optional(CONF_EVENT_FLAG): binary_sensor.binary_sensor_schema(),
 
             # ---- Binary sensor sub-components (RX8130CE only) -------------
             cv.Optional(CONF_VBLF): binary_sensor.binary_sensor_schema(
@@ -343,6 +399,12 @@ CONFIG_SCHEMA = cv.All(
 
             # ---- RX8111CE-specific ----------------------------------------
             cv.Optional(CONF_TIMESTAMP, default=False): cv.boolean,
+            cv.Optional(CONF_TIMESTAMP_RECORD_MODE): cv.enum(
+                TIMESTAMP_RECORD_MODE_MAP, lower=True
+            ),
+            cv.Optional(CONF_EVENT_TIMESTAMP): text_sensor.text_sensor_schema(
+                device_class="timestamp",
+            ),
 
             # ---- RX8130CE-specific ----------------------------------------
             cv.Optional(CONF_DIGITAL_OFFSET): cv.int_range(min=-64, max=63),
@@ -435,6 +497,10 @@ async def to_code(config):
         sens = await binary_sensor.new_binary_sensor(config[CONF_EVIN])
         cg.add(var.set_evin_binary_sensor(sens))
 
+    if CONF_EVENT_FLAG in config:
+        sens = await binary_sensor.new_binary_sensor(config[CONF_EVENT_FLAG])
+        cg.add(var.set_event_flag_binary_sensor(sens))
+
     # ---- RX8130CE binary sensors ------------------------------------------
     if CONF_BATTERY_LOW in config and model_class is RX8130Component:
         sens = await binary_sensor.new_binary_sensor(config[CONF_BATTERY_LOW])
@@ -447,6 +513,11 @@ async def to_code(config):
     # ---- RX8111CE-specific features ---------------------------------------
     if model_class is RX8111Component:
         cg.add(var.set_timestamp_enabled(config.get(CONF_TIMESTAMP, False)))
+        if CONF_TIMESTAMP_RECORD_MODE in config:
+            cg.add(var.set_timestamp_record_mode(config[CONF_TIMESTAMP_RECORD_MODE]))
+        if CONF_EVENT_TIMESTAMP in config:
+            sens = await text_sensor.new_text_sensor(config[CONF_EVENT_TIMESTAMP])
+            cg.add(var.set_event_timestamp_text_sensor(sens))
 
     # ---- RX8130CE-specific features ---------------------------------------
     if model_class is RX8130Component and CONF_DIGITAL_OFFSET in config:
@@ -476,6 +547,28 @@ async def to_code(config):
             cg.add(var.add_on_timer_callback(trigger))
 
     cg.add(var.set_timer_enabled(timer_enabled))
+
+    # ---- EVIN event detection (RX8111CE only) -----------------------------
+    event_enabled = CONF_EVENT_LEVEL in config or CONF_ON_EVENT in config
+    if CONF_EVENT_ENABLED in config:
+        event_enabled = config[CONF_EVENT_ENABLED]
+
+    if CONF_EVENT_LEVEL in config:
+        cg.add(var.set_event_level(config[CONF_EVENT_LEVEL]))
+
+    if CONF_EVIN_FILTER in config:
+        cg.add(var.set_evin_filter(config[CONF_EVIN_FILTER]))
+
+    if CONF_EVIN_PULL in config:
+        cg.add(var.set_evin_pull(config[CONF_EVIN_PULL]))
+
+    if CONF_ON_EVENT in config:
+        for conf in config[CONF_ON_EVENT]:
+            trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID])
+            await automation.build_automation(trigger, [], conf)
+            cg.add(var.add_on_event_callback(trigger))
+
+    cg.add(var.set_event_enabled(event_enabled))
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +671,13 @@ async def rx8xxx_clear_alarm_flag_to_code(config, action_id, template_arg, args)
 
 @automation.register_action("rx8xxx.clear_timer_flag", ClearTimerFlagAction, _PARENT_SCHEMA)
 async def rx8xxx_clear_timer_flag_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+    return var
+
+
+@automation.register_action("rx8xxx.clear_event_flag", ClearEventFlagAction, _PARENT_SCHEMA)
+async def rx8xxx_clear_event_flag_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var

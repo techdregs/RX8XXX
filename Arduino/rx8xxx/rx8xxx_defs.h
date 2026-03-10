@@ -53,6 +53,34 @@ enum TimerClock : uint8_t {
 };
 
 // ---------------------------------------------------------------------------
+// EVIN level selection (EHL bit in the EVIN Setting register, RX8111CE only)
+// ---------------------------------------------------------------------------
+enum EventLevel : uint8_t {
+  EVENT_LEVEL_LOW  = 0,  ///< Trigger when EVIN is low for at least the filter period
+  EVENT_LEVEL_HIGH = 1,  ///< Trigger when EVIN is high for at least the filter period
+};
+
+// ---------------------------------------------------------------------------
+// RX8111 timestamp record storage mode
+// ---------------------------------------------------------------------------
+enum TimestampRecordMode : uint8_t {
+  TIMESTAMP_RECORD_LATEST         = 0,  ///< Keep only the latest event time in 0x20-0x29
+  TIMESTAMP_RECORD_STOP_WHEN_FULL = 1,  ///< Store up to 8 records in RAM then stop
+  TIMESTAMP_RECORD_OVERWRITE      = 2,  ///< Store up to 8 records and wrap when full
+};
+
+// ---------------------------------------------------------------------------
+// EVIN pull-up/pull-down selection (PDN, PU1, PU0 in EVIN Setting register)
+// ---------------------------------------------------------------------------
+enum EvinPull : uint8_t {
+  EVIN_PULL_NONE        = 0,  ///< Hi-Z (no connection)
+  EVIN_PULL_UP_500K     = 1,  ///< Pull-up 500 kOhm (to VOUT)
+  EVIN_PULL_UP_1M       = 2,  ///< Pull-up 1 MOhm (to VOUT)
+  EVIN_PULL_UP_10M      = 3,  ///< Pull-up 10 MOhm (to VOUT)
+  EVIN_PULL_DOWN_500K   = 4,  ///< Pull-down 500 kOhm (to GND)
+};
+
+// ---------------------------------------------------------------------------
 // Time representation — plain struct, no epoch, no dependencies
 // ---------------------------------------------------------------------------
 struct RX8xxxTime {
@@ -72,8 +100,27 @@ struct RX8xxxFlags {
   bool vlf;         ///< Voltage Low Flag (oscillation lost)
   bool alarm_flag;  ///< AF is currently set
   bool timer_flag;  ///< TF is currently set
+  bool event_flag;  ///< EVF is currently set (RX8111CE only)
   bool alarm_edge;  ///< AF transitioned 0->1 since last poll
   bool timer_edge;  ///< TF transitioned 0->1 since last poll
+  bool event_edge;  ///< EVF transitioned 0->1 since last poll (RX8111CE only)
+};
+
+// ---------------------------------------------------------------------------
+// RX8111 decoded event timestamp record
+// ---------------------------------------------------------------------------
+struct RX8111TimestampRecord {
+  uint16_t year;        ///< 2000-2099
+  uint8_t  month;       ///< 1-12
+  uint8_t  day;         ///< 1-31
+  uint8_t  hour;        ///< 0-23
+  uint8_t  minute;      ///< 0-59
+  uint8_t  second;      ///< 0-59
+  uint16_t milliseconds;///< 0-999
+  bool vlow;            ///< VBAT low at the time of the event
+  bool vcmp;            ///< VDD < VBAT at the time of the event
+  bool vdet;            ///< RTC was in backup mode at the time of the event
+  bool xst;             ///< Crystal stop was latched at the time of the event
 };
 
 }  // namespace rx8xxx

@@ -1,8 +1,3 @@
-Etsy link for power supply PCB using the RX8111CE: 
-https://www.etsy.com/listing/4468663650/rtc-power-supply-for-esphomeembedded
-
-YouTube Video for reference:
-https://youtu.be/oVrDZNoOu6s
 
 Note: This should be considered as a beta. I have tested heavily in ESPHome to verify features work correctly, but there are probably edge cases that I haven't considered. Feel free to submit bugs. I have not tested the regular embedded libraries as much, so I anticipate those might have more issues.
 
@@ -13,14 +8,14 @@ Also, I do not plan on adding features, so if you need modifications beyond bugs
 
 ESPHome external component for **Epson RX8111CE** and **RX8130CE** real-time clock ICs over I2C.
 
-Provides hardware timekeeping with alarm, countdown timer, battery backup, clock output, and status monitoring — all configurable from YAML.
+Provides hardware timekeeping with alarm, countdown timer, event detection, hardware timestamping, battery backup, clock output, and status monitoring — all configurable from YAML.
 
 ## Supported Models
 
-| Model | Timer | Alarm Second | Timestamp Engine | Digital Offset | Timer 1/3600 Hz |
-|-------|-------|-------------|------------------|----------------|-----------------|
-| RX8111CE | 24-bit (max 16,777,215) | Yes | Yes | No | No |
-| RX8130CE | 16-bit (max 65,535) | No | No | Yes | Yes |
+| Model | Timer | Alarm Second | EVIN Event Detection | Timestamp Engine | Digital Offset | Timer 1/3600 Hz |
+|-------|-------|-------------|---------------------|------------------|----------------|-----------------|
+| RX8111CE | 24-bit (max 16,777,215) | Yes | Yes | Yes | No | No |
+| RX8130CE | 16-bit (max 65,535) | No | No | No | Yes | Yes |
 
 ## Installation
 
@@ -130,7 +125,7 @@ Drives the chip's FOUT pin with a square wave at the selected frequency. Useful 
 
 The alarm triggers when the current time matches **all enabled alarm fields** simultaneously. Omit a field to ignore it (match any value for that field).
 
-Example: setting only `alarm_hour: 5` will fire at the start of hour 5 (5:00:00) every day. Note: if you clear AF while still in the matching window (during hour 5), the alarm re-fires immediately since the hour still matches.
+Example: setting only `alarm_hour: 5` will fire at the start of hour 5 (5:00:00). Note: if you clear AF while still in the matching window (during hour 5), the alarm re-fires immediately since the hour still matches.
 
 ```yaml
     alarm_second: 30         # 0-59, RX8111CE only
@@ -229,6 +224,9 @@ Binary sensors are defined **inline** within the `rx8xxx` time platform block. A
 
     evin:
       name: "Event Input State"
+
+    event_flag:
+      name: "Event Flag"
 ```
 
 | Sensor | Description | Device Class |
@@ -236,6 +234,7 @@ Binary sensors are defined **inline** within the `rx8xxx` time platform block. A
 | `xst` | Crystal oscillation stop detected since last power-on | `problem` |
 | `battery_low` | VBAT low detection (from status register) | `battery` |
 | `evin` | Real-time EVIN pin voltage level | — |
+| `event_flag` | Event Flag (EVF) — EVIN event detected and not been cleared | — |
 
 #### RX8130CE Only
 
@@ -252,6 +251,8 @@ Binary sensors are defined **inline** within the `rx8xxx` time platform block. A
 | `battery_low` | Backup battery failure flag (VBFF) | `battery` |
 | `vblf` | VDD battery level low flag | `battery` |
 
+> **Note on `battery_low`:** This sensor is available on **both models** using the same YAML key, but reads different hardware registers internally (RX8111CE: VLOW in status register 0x33; RX8130CE: VBFF in flag register 0x1D). The low-voltage detection threshold is fixed in hardware at approximately 1.2V and is **not configurable**. This is designed for coin cells (CR2032, ML2032, etc.) — it is **not suitable for monitoring LiPo or other higher-voltage batteries**.
+
 ---
 
 ### Model-Specific Options
@@ -259,12 +260,52 @@ Binary sensors are defined **inline** within the `rx8xxx` time platform block. A
 #### RX8111CE
 
 ```yaml
-    timestamp_enabled: false   # Enable 8-event timestamp engine (default: false)
+    timestamp_enabled: false          # Keep hardware timestamp capture active (default: false)
+    timestamp_record_mode: latest     # "latest", "stop_when_full", or "overwrite" (default: latest)
+    event_level: low                  # EVIN detection level: "low" or "high"
+    evin_filter: 0                    # Chattering filter: 0=off, 1=3.9ms, 2=15.6ms, 3=125ms
+    evin_pull: none                   # Internal pull resistor: see table below
+    event_timestamp:
+      name: "RTC Event Timestamp"     # HA stores the published timestamp history
 ```
 
-Enables the hardware timestamp engine triggered by the EVIN pin. When enabled, EVIN transitions record timestamps in registers 0x40–0x7F.
+| Option | Type | Default | Notes |
+|--------|------|---------|-------|
+| `event_level` | enum | `low` | `"low"` or `"high"` — which EVIN voltage level triggers detection |
+| `evin_filter` | int | `0` | Hardware chattering filter level (0–3) |
+| `evin_pull` | enum | `none` | Internal pull-up/pull-down resistor on EVIN pin |
+| `timestamp_enabled` | boolean | `false` | Keep hardware timestamp capture active |
+| `timestamp_record_mode` | enum | `latest` | How the chip stores timestamp records |
 
-> **Note:** Reading stored timestamps is not yet exposed by this component. This option enables the hardware engine so the EVF flag is set on EVIN transitions.
+**EVIN chattering filter (`evin_filter`):**
+
+| Value | Filter Period | Description |
+|-------|--------------|-------------|
+| `0` | None | No filter (default) |
+| `1` | 3.9 ms | Rejects noise shorter than 3.9 ms |
+| `2` | 15.6 ms | Rejects noise shorter than 15.6 ms |
+| `3` | 125 ms | Rejects noise shorter than 125 ms |
+
+**EVIN pull resistor (`evin_pull`):**
+
+| Value | Description |
+|-------|-------------|
+| `none` | Hi-Z — no internal connection (default) |
+| `pullup_500k` | Pull-up 500 kOhm to VOUT |
+| `pullup_1m` | Pull-up 1 MOhm to VOUT |
+| `pullup_10m` | Pull-up 10 MOhm to VOUT |
+| `pulldown_500k` | Pull-down 500 kOhm to GND |
+
+> **Tip:** If the EVIN pin floats or produces spurious events, configure a pull resistor to match your idle state and a chattering filter to reject noise. For example, with `event_level: low` (trigger on low), use `evin_pull: pullup_500k` to keep the pin high at idle, and `evin_filter: 2` for 15.6 ms debouncing.
+
+The RX8111CE can timestamp EVIN detections independently from the latched `EVF` flag. `event_timestamp` publishes each recorded RTC timestamp as an ISO8601 UTC text sensor with `device_class: timestamp`, and Home Assistant Recorder keeps the history as the event log.
+
+`timestamp_record_mode` controls how the hardware stores pending records before ESPHome drains them:
+- `latest`: store only the newest event in registers `0x20`–`0x29`
+- `stop_when_full`: store up to 8 records in timestamp RAM, then stop until RAM is cleared
+- `overwrite`: store up to 8 records in timestamp RAM and wrap when full
+
+In buffered modes, the component publishes stored timestamps oldest-to-newest and then clears the timestamp RAM pointer so capture can continue. This does **not** clear `EVF`; `rx8xxx.clear_event_flag` remains manual.
 
 #### RX8130CE
 
@@ -286,12 +327,16 @@ Applies a digital frequency offset correction to the 32.768 kHz oscillator. The 
 
     on_timer:
       - logger.log: "Timer triggered!"
+
+    on_event:
+      - logger.log: "EVIN event flag triggered!"
 ```
 
 | Trigger | Description |
 |---------|-------------|
 | `on_alarm` | Fires when the Alarm Flag (AF) transitions from 0 to 1 (rising edge only) |
 | `on_timer` | Fires when the Timer Flag (TF) transitions from 0 to 1 (rising edge only) |
+| `on_event` | Fires when the Event Flag (EVF) transitions from 0 to 1 (rising edge only, RX8111CE only) |
 
 Callbacks fire **once per event**, not repeatedly while the flag remains set. The flag must be cleared (via the clear actions below) before the trigger can fire again on the next event.
 
@@ -318,6 +363,10 @@ Callbacks fire **once per event**, not repeatedly while the flag remains set. Th
 
 # Clear the Timer Flag (TF) to re-arm on_timer edge detection
 - rx8xxx.clear_timer_flag:
+    id: my_rtc
+
+# Clear the Event Flag (EVF) and release /INT from an EVIN event
+- rx8xxx.clear_event_flag:
     id: my_rtc
 ```
 
@@ -391,14 +440,16 @@ The RTC /INT pin can be used in conjunction with the alarm function (and suitabl
 |------|--------------|---------------|--------------|
 | AF (Alarm) | No | Held LOW until cleared | `rx8xxx.clear_alarm_flag` |
 | TF (Timer) | No | Auto-releases ~7.8 ms | `rx8xxx.clear_timer_flag` |
+| EVF (Event, RX8111CE) | No | Held LOW until cleared if `EIE=1` | `rx8xxx.clear_event_flag` |
 
-Both flags are **preserved across power cycles and reconfigurations**. On boot, startup flags are cleared (RX8111CE: VLF, XST, POR; RX8130CE: VLF, RSF), but AF and TF are intentionally preserved so events that occurred while the MCU was off can be detected on the next poll.
+These flags are **preserved across power cycles and reconfigurations**. On boot, startup flags are cleared (RX8111CE: VLF, XST, POR; RX8130CE: VLF, RSF), but AF, TF, and EVF are intentionally preserved so events that occurred while the MCU was off can be detected on the next poll.
 
 ### Polling and Edge Detection
 
 - Flags are read every `update_interval`.
-- `on_alarm` and `on_timer` fire only on the **0→1 rising edge** — once per event, not on every poll while the flag is set.
+- `on_alarm`, `on_timer`, and `on_event` fire only on the **0→1 rising edge** — once per event, not on every poll while the flag is set.
 - To receive the next event's callback, you **must clear the flag** after handling the current one.
+- `event_timestamp` publishing is separate from `EVF`; buffered timestamp RAM is drained automatically after publish, but `EVF` still stays latched until you clear it.
 
 ### Weekday Encoding
 
@@ -430,7 +481,12 @@ The component validates your configuration at compile time and produces clear er
 | `timer_enabled: true` without `timer_count` | `'timer_enabled: true' requires 'timer_count'` |
 | `alarm_second` on RX8130CE | `'alarm_second' is only available on the RX8111CE` |
 | `timestamp_enabled` on RX8130CE | `'timestamp_enabled' is only available on the RX8111CE` |
-| `xst` or `evin` sensor on RX8130CE | Sensor only available on RX8111CE |
+| `timestamp_record_mode` on RX8130CE | `'timestamp_record_mode' is only available on the RX8111CE` |
+| `event_timestamp` on RX8130CE | `'event_timestamp' text sensor is only available on the RX8111CE` |
+| `event_level` on RX8130CE | `'event_level' is only available on the RX8111CE` |
+| `evin_filter` on RX8130CE | `'evin_filter' is only available on the RX8111CE` |
+| `evin_pull` on RX8130CE | `'evin_pull' is only available on the RX8111CE` |
+| `xst`, `evin`, or `event_flag` sensor on RX8130CE | Sensor only available on RX8111CE |
 | `digital_offset` on RX8111CE | `'digital_offset' is only available on the RX8130CE` |
 | `vblf` sensor on RX8111CE | Sensor only available on RX8130CE |
 | Both `alarm_weekday` and `alarm_day` | Mutually exclusive fields error |
@@ -510,6 +566,20 @@ time:
       name: "RTC Event Input"
 
     timestamp_enabled: true
+    timestamp_record_mode: stop_when_full
+
+    event_timestamp:
+      name: "RTC Event Timestamp"
+
+    event_level: low
+    evin_filter: 2              # 15.6ms chattering filter
+    evin_pull: pullup_500k      # Internal pull-up (pin high at idle)
+
+    on_event:
+      - logger.log: "EVIN event captured!"
+      # EVF remains latched until cleared separately.
+      - rx8xxx.clear_event_flag:
+          id: rtc
 
   # Sync time from Home Assistant
   - platform: homeassistant
@@ -609,8 +679,28 @@ interval:
           - script.execute: pmos_cycle
 ```
 
+## Example YAML Files
+
+The [`Example_YAML/`](Example_YAML/) folder contains focused, minimal configurations for each major feature:
+
+| File | Description |
+|------|-------------|
+| [`Minimal_RTC.yaml`](Example_YAML/Minimal_RTC.yaml) | Basic timekeeping with Home Assistant sync |
+| [`Minimal_Fixed_Alarm.yaml`](Example_YAML/Minimal_Fixed_Alarm.yaml) | Alarm at a fixed time (e.g., 07:30 daily) |
+| [`Minimal_Relative_Alarm.yaml`](Example_YAML/Minimal_Relative_Alarm.yaml) | Schedule alarm N minutes/seconds from now |
+| [`Minimal_Timer.yaml`](Example_YAML/Minimal_Timer.yaml) | Periodic countdown timer with `on_timer` |
+| [`Minimal_Event.yaml`](Example_YAML/Minimal_Event.yaml) | EVIN event detection with timestamps, filter, and pull-up |
+| [`Minimal_Status_Sensors.yaml`](Example_YAML/Minimal_Status_Sensors.yaml) | All binary sensors for RTC health monitoring |
+| [`Minimal_Alarm_Deep_Sleep.yaml`](Example_YAML/Minimal_Alarm_Deep_Sleep.yaml) | Ultra-low-power wake cycle using RTC alarm + PMOS switch |
+| [`Minimal_Event_Deep_Sleep.yaml`](Example_YAML/Minimal_Event_Deep_Sleep.yaml) | Ultra-low-power wake on EVIN event + PMOS switch |
+
+---
+
 ## Dependencies
 
 - **ESPHome** with `i2c` component configured
-- `binary_sensor` is auto-loaded by the component
+- `binary_sensor` and `text_sensor` are auto-loaded by the component
 
+## License
+
+See repository for license details.

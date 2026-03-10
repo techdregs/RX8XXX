@@ -27,7 +27,7 @@ class RX8xxxBase {
 
   // ---- Flag polling --------------------------------------------------------
   /// Read flag register and return current states + edge detection.
-  /// Call periodically (e.g. once per second) to detect alarm/timer events.
+  /// Call periodically (e.g. once per second) to detect alarm/timer/event flags.
   bool poll_flags(RX8xxxFlags *out);
 
   // ---- Configuration setters (call before begin()) ------------------------
@@ -51,6 +51,7 @@ class RX8xxxBase {
   // ---- Explicit flag-clear actions -----------------------------------------
   bool clear_alarm_flag();
   bool clear_timer_flag();
+  bool clear_event_flag();
 
   // ---- Runtime alarm programming -------------------------------------------
   bool set_alarm_runtime(uint8_t second, uint8_t minute, uint8_t hour,
@@ -78,6 +79,7 @@ class RX8xxxBase {
   virtual uint8_t stop_bit_mask() const = 0;
   virtual uint8_t alarm_flag_mask() const = 0;
   virtual uint8_t timer_flag_mask() const = 0;
+  virtual uint8_t event_flag_mask() const { return 0; }  // RX8130CE has no EVF
   virtual bool supports_alarm_second_() const { return false; }
 
   // ---- Chip-specific operations -------------------------------------------
@@ -88,6 +90,8 @@ class RX8xxxBase {
   virtual bool configure_timer() = 0;
   virtual bool disable_alarm() = 0;
   virtual bool disable_timer() = 0;
+  virtual bool configure_event() { return true; }
+  virtual bool disable_event() { return true; }
   virtual bool apply_runtime_options() { return true; }
 
   /// Called from poll_flags() after reading the flag register.
@@ -121,9 +125,12 @@ class RX8xxxBase {
   uint32_t timer_count_{0};
   TimerClock timer_clock_{TIMER_1_HZ};
 
+  bool event_enabled_{false};
+
   // ---- Edge-detection state ------------------------------------------------
   bool prev_alarm_flag_{false};
   bool prev_timer_flag_{false};
+  bool prev_event_flag_{false};
 };
 
 }  // namespace rx8xxx
