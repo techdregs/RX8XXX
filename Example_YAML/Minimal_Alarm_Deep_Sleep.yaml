@@ -1,0 +1,101 @@
+# Minimal Deep Sleep Cycle — ultra-low-power wake using RTC alarm + PMOS switch
+#
+# This pattern uses the RTC /INT pin to control external power (e.g., a PMOS
+# FET circuit) so the MCU is completely unpowered between wake cycles.
+#
+# Flow:
+#   1. MCU boots, syncs time, does work
+#   2. Schedules a relative alarm (e.g., 60 seconds from now)
+#   3. Cleanly disconnects from Home Assistant (prevents "unavailable" status)
+#   4. Clears AF — this releases /INT HIGH, which turns off the PMOS power switch
+#   5. MCU loses power completely (near-zero current draw)
+#   6. When alarm fires, /INT goes LOW, PMOS turns on, MCU boots again
+#
+# IMPORTANT: A deep_sleep component must be declared (even if unused) so that
+# Home Assistant treats the device as "sleeping" rather than "unavailable".
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/tech_dregs/RX8XXX
+    components: [rx8xxx]
+
+i2c:
+  sda: GPIO23
+  scl: GPIO22
+
+globals:
+  - id: cycle_fired
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+time:
+  - platform: rx8xxx
+    id: my_rtc
+    model: RX8111CE
+
+    alarm_enabled: true
+    alarm_minute: 0  # placeholder; overwritten by schedule_alarm_in
+
+    on_alarm:
+      - logger.log: "Woke up from alarm!"
+      - rx8xxx.clear_alarm_flag:
+          id: my_rtc
+
+  - platform: homeassistant
+    on_time_sync:
+      - rx8xxx.write_time:
+          id: my_rtc
+
+# Prevents HA from showing "unavailable" during power-off
+deep_sleep:
+  id: deep_sleep_dummy
+
+script:
+  - id: power_off_cycle
+    mode: restart
+    then:
+      - logger.log: "Starting power-off cycle..."
+      # Make sure we have the latest time from the RTC
+      - rx8xxx.read_time:
+          id: my_rtc
+      # Schedule the next wake-up
+      - rx8xxx.schedule_alarm_in:
+          id: my_rtc
+          seconds: 60
+      # Cleanly disconnect from Home Assistant before power cut
+      - lambda: |-
+          using namespace esphome::api;
+          if (global_api_server != nullptr) {
+            global_api_server->on_shutdown();
+            uint32_t start = millis();
+            while (millis() - start < 500) {
+              global_api_server->loop();
+              if (global_api_server->teardown())
+                break;
+              delay(10);
+            }
+          }
+      - logger.log: "Alarm scheduled, clearing AF to cut power..."
+      # Clearing AF releases /INT HIGH, which turns off the PMOS power switch
+      - rx8xxx.clear_alarm_flag:
+          id: my_rtc
+      # If we reach here, power did not cut (no external circuit or wiring issue)
+      - delay: 100ms
+      - logger.log: "WARNING: Power is still on — check PMOS circuit wiring"
+
+# Run the power-off cycle once after a 30-second startup delay
+interval:
+  - interval: 1s
+    startup_delay:
+      seconds: 30
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(cycle_fired);'
+          then:
+            - globals.set:
+                id: cycle_fired
+                value: "true"
+            - script.execute: power_off_cycle

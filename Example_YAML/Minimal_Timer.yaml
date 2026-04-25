@@ -1,0 +1,38 @@
+# Minimal Timer — periodic countdown timer
+#
+# The timer counts down from timer_count at timer_clock rate, fires TF,
+# then automatically restarts. The /INT pin pulses low briefly (~7.8ms)
+# on each timer event — it does NOT stay held low like the alarm.
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/tech_dregs/RX8XXX
+    components: [rx8xxx]
+
+i2c:
+  sda: GPIO23
+  scl: GPIO22
+
+time:
+  - platform: rx8xxx
+    id: my_rtc
+    model: RX8111CE  # or RX8130CE
+
+    # Timer: fire every 120 seconds (2 minutes)
+    timer_count: 120
+    timer_clock: "1hz"  # "4096hz", "64hz", "1hz", "1_60hz", "1_3600hz" (RX8130CE only)
+
+    timer_flag:
+      name: "Timer Flag"
+
+    on_timer:
+      - logger.log: "Timer fired!"
+      # Clear TF to re-arm edge detection for the next on_timer callback
+      - rx8xxx.clear_timer_flag:
+          id: my_rtc
+
+  - platform: homeassistant
+    on_time_sync:
+      - rx8xxx.write_time:
+          id: my_rtc

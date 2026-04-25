@@ -1,0 +1,104 @@
+# Minimal Event Deep Sleep — ultra-low-power wake using EVIN event + PMOS switch
+#
+# This pattern uses the RTC /INT pin (driven by EVF + EIE) to control external
+# power via a PMOS FET circuit. The MCU is completely unpowered until an
+# external signal triggers the EVIN pin.
+#
+# Flow:
+#   1. MCU boots, does work, then clears EVF — releasing /INT HIGH, cutting power
+#   2. MCU loses power completely (near-zero current draw)
+#   3. External signal triggers EVIN, EVF latches, /INT goes LOW
+#   4. PMOS turns on, MCU boots and handles the event
+#   5. MCU clears EVF to release /INT and cut power again
+#
+# IMPORTANT: A deep_sleep component must be declared (even if unused) so that
+# Home Assistant treats the device as "sleeping" rather than "unavailable".
+#
+# RX8111CE only — the RX8130CE does not have EVIN event detection.
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/tech_dregs/RX8XXX
+    components: [rx8xxx]
+
+i2c:
+  sda: GPIO23
+  scl: GPIO22
+
+globals:
+  - id: cycle_fired
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+time:
+  - platform: rx8xxx
+    id: my_rtc
+    model: RX8111CE
+
+    # EVIN event detection
+    event_level: low            # Trigger when EVIN is held low
+    evin_filter: 2              # 15.6ms chattering filter to reject noise
+    evin_pull: pullup_500k      # Internal pull-up keeps pin high when idle
+
+    # Optional: capture timestamps of events
+    timestamp_enabled: true
+    event_timestamp:
+      name: "Event Timestamp"
+
+    event_flag:
+      name: "Event Flag"
+
+    on_event:
+      - logger.log: "EVIN event woke the device!"
+
+  - platform: homeassistant
+    on_time_sync:
+      - rx8xxx.write_time:
+          id: my_rtc
+
+# Prevents HA from showing "unavailable" during power-off
+deep_sleep:
+  id: deep_sleep_dummy
+
+script:
+  - id: power_off_via_event
+    mode: restart
+    then:
+      - logger.log: "Preparing to cut power via EVF clear..."
+      # Cleanly disconnect from Home Assistant before power cut
+      - lambda: |-
+          using namespace esphome::api;
+          if (global_api_server != nullptr) {
+            global_api_server->on_shutdown();
+            uint32_t start = millis();
+            while (millis() - start < 500) {
+              global_api_server->loop();
+              if (global_api_server->teardown())
+                break;
+              delay(10);
+            }
+          }
+      - logger.log: "Clearing EVF to cut power..."
+      # Clearing EVF releases /INT HIGH, which turns off the PMOS power switch
+      - rx8xxx.clear_event_flag:
+          id: my_rtc
+      # If we reach here, power did not cut (no external circuit or wiring issue)
+      - delay: 100ms
+      - logger.log: "WARNING: Power is still on — check PMOS circuit wiring"
+
+# Run the power-off script once after a 30-second startup delay
+interval:
+  - interval: 1s
+    startup_delay:
+      seconds: 30
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(cycle_fired);'
+          then:
+            - globals.set:
+                id: cycle_fired
+                value: "true"
+            - script.execute: power_off_via_event

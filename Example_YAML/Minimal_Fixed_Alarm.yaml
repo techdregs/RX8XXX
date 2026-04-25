@@ -1,0 +1,35 @@
+# Minimal Fixed Alarm — alarm fires at a fixed time every day
+#
+# This example fires the alarm at 07:30:00 every day.
+# The /INT pin is held LOW until clear_alarm_flag is called.
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/tech_dregs/RX8XXX
+    components: [rx8xxx]
+
+i2c:
+  sda: GPIO23
+  scl: GPIO22
+
+time:
+  - platform: rx8xxx
+    id: my_rtc
+    model: RX8111CE  # or RX8130CE
+
+    # Alarm at 07:30:00 daily (omit alarm_weekday/alarm_day to match every day)
+    alarm_second: 0   # RX8111CE only; omit for RX8130CE
+    alarm_minute: 30
+    alarm_hour: 7
+
+    on_alarm:
+      - logger.log: "Alarm fired at 07:30!"
+      # Clear AF to release /INT and allow the next alarm to trigger
+      - rx8xxx.clear_alarm_flag:
+          id: my_rtc
+
+  - platform: homeassistant
+    on_time_sync:
+      - rx8xxx.write_time:
+          id: my_rtc

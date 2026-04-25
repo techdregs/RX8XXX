@@ -1,0 +1,52 @@
+# Minimal Event — EVIN pin event detection with timestamps (RX8111CE only)
+#
+# Detects level transitions on the EVIN pin, fires on_event, and publishes
+# hardware-captured timestamps to Home Assistant.
+#
+# The internal pull-up keeps the pin high at idle; a low-level detection
+# triggers when an external signal pulls EVIN low. The chattering filter
+# rejects noise shorter than 15.6ms.
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/tech_dregs/RX8XXX
+    components: [rx8xxx]
+
+i2c:
+  sda: GPIO23
+  scl: GPIO22
+
+time:
+  - platform: rx8xxx
+    id: my_rtc
+    model: RX8111CE
+
+    # EVIN event detection
+    event_level: low            # Trigger when EVIN is held low
+    evin_filter: 2              # Chattering filter: 0=off, 1=3.9ms, 2=15.6ms, 3=125ms
+    evin_pull: pullup_500k      # Internal pull-up keeps pin high when idle
+
+    # Timestamp capture — records when each event occurred
+    timestamp_enabled: true
+    timestamp_record_mode: stop_when_full  # "latest", "stop_when_full", or "overwrite"
+
+    event_timestamp:
+      name: "Event Timestamp"
+
+    # Binary sensors for monitoring
+    event_flag:
+      name: "Event Flag"
+    evin:
+      name: "EVIN Pin State"
+
+    on_event:
+      - logger.log: "EVIN event detected!"
+      # Clear EVF to release /INT and allow the next event to trigger
+      - rx8xxx.clear_event_flag:
+          id: my_rtc
+
+  - platform: homeassistant
+    on_time_sync:
+      - rx8xxx.write_time:
+          id: my_rtc

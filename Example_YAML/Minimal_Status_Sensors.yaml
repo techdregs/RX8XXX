@@ -1,0 +1,59 @@
+# Minimal Status Sensors — monitor RTC health and battery state
+#
+# Exposes all available binary sensors for the selected model.
+# Comment/uncomment sections to match your chip.
+#
+# NOTE: "battery_low" is available on BOTH models but reads different registers:
+#   - RX8111CE: VLOW bit in status register 0x33 (backup battery low)
+#   - RX8130CE: VBFF bit in flag register 0x1D (backup battery failure)
+# The YAML key is the same for both; the driver reads the correct register
+# based on the model. The detection threshold is fixed in hardware (~1.2V)
+# and is NOT configurable. This is designed for coin cells (CR2032, ML2032,
+# etc.) — it is NOT suitable for monitoring LiPo batteries.
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/tech_dregs/RX8XXX
+    components: [rx8xxx]
+
+i2c:
+  sda: GPIO23
+  scl: GPIO22
+
+time:
+  - platform: rx8xxx
+    id: my_rtc
+    model: RX8111CE  # or RX8130CE
+
+    # ---- Common sensors (both models) ----
+    vlf:
+      name: "Voltage Low Flag"       # Oscillation lost / power failure
+
+    alarm_flag:
+      name: "Alarm Flag"             # AF latched (alarm has fired)
+
+    timer_flag:
+      name: "Timer Flag"             # TF latched (timer has fired)
+
+    battery_low:
+      name: "Battery Low"            # VBAT low — works on both models (see note above)
+
+    # ---- RX8111CE only (remove if using RX8130CE) ----
+    xst:
+      name: "Crystal Stop"           # Crystal oscillation stop detected
+
+    evin:
+      name: "EVIN Pin State"         # Real-time EVIN voltage level
+
+    event_flag:
+      name: "Event Flag"             # EVF latched (EVIN event detected)
+
+    # ---- RX8130CE only (uncomment if using RX8130CE) ----
+    # vblf:
+    #   name: "VDD Level Low"          # VDD supply battery low flag
+
+  - platform: homeassistant
+    on_time_sync:
+      - rx8xxx.write_time:
+          id: my_rtc

@@ -1,0 +1,52 @@
+# Minimal Relative Alarm — schedule an alarm N seconds/minutes from now
+#
+# Uses rx8xxx.schedule_alarm_in to compute the target time from the current
+# system clock and program the alarm registers automatically.
+#
+# Note: the alarm must already be enabled (via alarm config or set_alarm).
+# At least one alarm field is required to enable it — here we use alarm_minute
+# as a placeholder (schedule_alarm_in overwrites all fields anyway).
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/tech_dregs/RX8XXX
+    components: [rx8xxx]
+
+i2c:
+  sda: GPIO23
+  scl: GPIO22
+
+time:
+  - platform: rx8xxx
+    id: my_rtc
+    model: RX8111CE  # or RX8130CE
+
+    # Enable alarm (required for schedule_alarm_in to work)
+    alarm_enabled: true
+    alarm_minute: 0  # placeholder; overwritten by schedule_alarm_in
+
+    on_alarm:
+      - logger.log: "Relative alarm fired!"
+      - rx8xxx.clear_alarm_flag:
+          id: my_rtc
+
+  - platform: homeassistant
+    on_time_sync:
+      - rx8xxx.write_time:
+          id: my_rtc
+
+button:
+  - platform: template
+    name: "Alarm in 5 Minutes"
+    on_press:
+      - rx8xxx.schedule_alarm_in:
+          id: my_rtc
+          minutes: 5
+
+  - platform: template
+    name: "Alarm in 30 Seconds"
+    on_press:
+      - rx8xxx.schedule_alarm_in:
+          id: my_rtc
+          seconds: 30

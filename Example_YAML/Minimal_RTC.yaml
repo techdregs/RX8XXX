@@ -1,0 +1,42 @@
+# Minimal RTC — basic timekeeping with Home Assistant sync
+#
+# Reads time from the RTC on boot and syncs system clock.
+# Writes time back to the RTC whenever Home Assistant provides a time update.
+# Includes buttons to manually trigger read/write for verification.
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/tech_dregs/RX8XXX
+    components: [rx8xxx]
+
+i2c:
+  sda: GPIO23
+  scl: GPIO22
+
+time:
+  - platform: rx8xxx
+    id: my_rtc
+    model: RX8111CE  # or RX8130CE
+
+  - platform: homeassistant
+    on_time_sync:
+      - rx8xxx.write_time:
+          id: my_rtc
+
+# Buttons for manual verification — press in HA to confirm the RTC
+# is reading and writing time correctly.
+button:
+  - platform: template
+    name: "Write Time to RTC"
+    on_press:
+      - rx8xxx.write_time:
+          id: my_rtc
+      - logger.log: "System time written to RTC"
+
+  - platform: template
+    name: "Read Time from RTC"
+    on_press:
+      - rx8xxx.read_time:
+          id: my_rtc
+      - logger.log: "RTC time read into system clock"
