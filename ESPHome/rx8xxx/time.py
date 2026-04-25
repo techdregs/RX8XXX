@@ -648,35 +648,35 @@ def _normalize_schedule_alarm_in_keys(config):
     return out
 
 
-@automation.register_action("rx8xxx.write_time", WriteAction, _PARENT_SCHEMA)
+@automation.register_action("rx8xxx.write_time", WriteAction, _PARENT_SCHEMA, synchronous=True)
 async def rx8xxx_write_time_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var
 
 
-@automation.register_action("rx8xxx.read_time", ReadAction, _PARENT_SCHEMA)
+@automation.register_action("rx8xxx.read_time", ReadAction, _PARENT_SCHEMA, synchronous=True)
 async def rx8xxx_read_time_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var
 
 
-@automation.register_action("rx8xxx.clear_alarm_flag", ClearAlarmFlagAction, _PARENT_SCHEMA)
+@automation.register_action("rx8xxx.clear_alarm_flag", ClearAlarmFlagAction, _PARENT_SCHEMA, synchronous=True)
 async def rx8xxx_clear_alarm_flag_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var
 
 
-@automation.register_action("rx8xxx.clear_timer_flag", ClearTimerFlagAction, _PARENT_SCHEMA)
+@automation.register_action("rx8xxx.clear_timer_flag", ClearTimerFlagAction, _PARENT_SCHEMA, synchronous=True)
 async def rx8xxx_clear_timer_flag_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var
 
 
-@automation.register_action("rx8xxx.clear_event_flag", ClearEventFlagAction, _PARENT_SCHEMA)
+@automation.register_action("rx8xxx.clear_event_flag", ClearEventFlagAction, _PARENT_SCHEMA, synchronous=True)
 async def rx8xxx_clear_event_flag_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
@@ -705,6 +705,7 @@ async def rx8xxx_clear_event_flag_to_code(config, action_id, template_arg, args)
         _normalize_set_alarm_action_keys,
         _validate_set_alarm_action,
     ),
+    synchronous=True,
 )
 async def rx8xxx_set_alarm_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
@@ -742,6 +743,7 @@ async def rx8xxx_set_alarm_to_code(config, action_id, template_arg, args):
         ),
         _normalize_schedule_alarm_in_keys,
     ),
+    synchronous=True,
 )
 async def rx8xxx_schedule_alarm_in_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
