@@ -689,17 +689,17 @@ async def rx8xxx_clear_event_flag_to_code(config, action_id, template_arg, args)
     cv.All(
         _PARENT_SCHEMA.extend(
             {
-                cv.Optional(CONF_ENABLED): cv.boolean,
-                cv.Optional(CONF_SECOND): _validate_alarm_second,
-                cv.Optional(CONF_SECONDS): _validate_alarm_second,
-                cv.Optional(CONF_MINUTE): _validate_alarm_minute,
-                cv.Optional(CONF_MINUTES): _validate_alarm_minute,
-                cv.Optional(CONF_HOUR): _validate_alarm_hour,
-                cv.Optional(CONF_HOURS): _validate_alarm_hour,
-                cv.Optional(CONF_WEEKDAY): _validate_alarm_weekday,
-                cv.Optional(CONF_WEEKDAYS): _validate_alarm_weekday,
-                cv.Optional(CONF_DAY): _validate_alarm_day,
-                cv.Optional(CONF_DAYS): _validate_alarm_day,
+                cv.Optional(CONF_ENABLED): cv.templatable(cv.boolean),
+                cv.Optional(CONF_SECOND): cv.templatable(_validate_alarm_second),
+                cv.Optional(CONF_SECONDS): cv.templatable(_validate_alarm_second),
+                cv.Optional(CONF_MINUTE): cv.templatable(_validate_alarm_minute),
+                cv.Optional(CONF_MINUTES): cv.templatable(_validate_alarm_minute),
+                cv.Optional(CONF_HOUR): cv.templatable(_validate_alarm_hour),
+                cv.Optional(CONF_HOURS): cv.templatable(_validate_alarm_hour),
+                cv.Optional(CONF_WEEKDAY): cv.templatable(_validate_alarm_weekday),
+                cv.Optional(CONF_WEEKDAYS): cv.templatable(_validate_alarm_weekday),
+                cv.Optional(CONF_DAY): cv.templatable(_validate_alarm_day),
+                cv.Optional(CONF_DAYS): cv.templatable(_validate_alarm_day),
             }
         ),
         _normalize_set_alarm_action_keys,
@@ -711,17 +711,23 @@ async def rx8xxx_set_alarm_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     if CONF_ENABLED in config:
-        cg.add(var.set_enabled(config[CONF_ENABLED]))
+        template_ = await cg.templatable(config[CONF_ENABLED], args, cg.bool_)
+        cg.add(var.set_enabled(template_))
     if CONF_SECOND in config:
-        cg.add(var.set_second(config[CONF_SECOND]))
+        template_ = await cg.templatable(config[CONF_SECOND], args, cg.uint16)
+        cg.add(var.set_second(template_))
     if CONF_MINUTE in config:
-        cg.add(var.set_minute(config[CONF_MINUTE]))
+        template_ = await cg.templatable(config[CONF_MINUTE], args, cg.uint16)
+        cg.add(var.set_minute(template_))
     if CONF_HOUR in config:
-        cg.add(var.set_hour(config[CONF_HOUR]))
+        template_ = await cg.templatable(config[CONF_HOUR], args, cg.uint16)
+        cg.add(var.set_hour(template_))
     if CONF_WEEKDAY in config:
-        cg.add(var.set_weekday(config[CONF_WEEKDAY]))
+        template_ = await cg.templatable(config[CONF_WEEKDAY], args, cg.uint16)
+        cg.add(var.set_weekday(template_))
     if CONF_DAY in config:
-        cg.add(var.set_day(config[CONF_DAY]))
+        template_ = await cg.templatable(config[CONF_DAY], args, cg.uint16)
+        cg.add(var.set_day(template_))
     return var
 
 

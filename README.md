@@ -385,10 +385,22 @@ Reprogram the alarm registers at runtime. Omit fields to disable matching on tha
     day: 15            # or "days" (alias). 1–31
 ```
 
+The runtime action fields are templatable, so they can be driven from ESPHome entities, Home Assistant inputs, globals, or lambdas. Static top-level alarm config (`alarm_hour`, `alarm_minute`, etc.) is still fixed at compile time.
+
+```yaml
+- rx8xxx.set_alarm:
+    id: my_rtc
+    enabled: true
+    hour: !lambda "return (uint16_t) id(next_alarm_hour);"
+    minute: !lambda "return (uint16_t) id(wake_minute).state;"
+    second: 0
+```
+
 **Rules:**
 - Cannot specify both `weekday` and `day` (mutually exclusive).
 - Cannot use both singular and plural forms of the same field (e.g., `minute` and `minutes`).
 - At least one time field or `enabled` must be specified.
+- Constant action values are validated at compile time; templated values are range-checked at runtime before programming the RTC.
 
 #### Schedule Alarm In (Relative)
 

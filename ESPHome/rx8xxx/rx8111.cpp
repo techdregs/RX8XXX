@@ -534,7 +534,7 @@ bool RX8111Component::publish_timestamp_records_(uint8_t flag_byte) {
     } else if (!this->has_last_latest_timestamp_ || raw != this->last_latest_timestamp_raw_) {
       DecodedTimestampRecord record{};
       if (decode_single_timestamp_record_(raw, &record)) {
-        char timestamp_value[32];
+        char timestamp_value[33];
         format_timestamp_utc_(record, timestamp_value, sizeof(timestamp_value));
         this->event_timestamp_sensor_->publish_state(timestamp_value);
         this->last_latest_timestamp_raw_ = raw;
@@ -572,7 +572,7 @@ bool RX8111Component::publish_timestamp_records_(uint8_t flag_byte) {
           continue;
         }
 
-        char timestamp_value[32];
+        char timestamp_value[33];
         format_timestamp_utc_(record, timestamp_value, sizeof(timestamp_value));
         this->event_timestamp_sensor_->publish_state(timestamp_value);
         ESP_LOGD(TAG, "Published buffered event timestamp %s from slot %u (VLOW=%d VCMP=%d VDET=%d XST=%d)",

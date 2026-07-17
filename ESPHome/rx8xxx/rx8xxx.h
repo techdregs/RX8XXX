@@ -249,54 +249,76 @@ class EventTrigger : public Trigger<> {};
 template<typename... Ts>
 class SetAlarmAction : public Action<Ts...>, public Parented<RX8XXXComponent> {
  public:
-  void set_enabled(bool enabled) {
+  template<typename V> void set_enabled(V enabled) {
     this->has_enabled_ = true;
     this->enabled_ = enabled;
   }
-  void set_second(uint8_t second) {
+  template<typename V> void set_second(V second) {
     this->has_second_ = true;
     this->second_ = second;
   }
-  void set_minute(uint8_t minute) {
+  template<typename V> void set_minute(V minute) {
     this->has_minute_ = true;
     this->minute_ = minute;
   }
-  void set_hour(uint8_t hour) {
+  template<typename V> void set_hour(V hour) {
     this->has_hour_ = true;
     this->hour_ = hour;
   }
-  void set_weekday(uint8_t weekday) {
+  template<typename V> void set_weekday(V weekday) {
     this->has_weekday_ = true;
     this->weekday_ = weekday;
   }
-  void set_day(uint8_t day) {
+  template<typename V> void set_day(V day) {
     this->has_day_ = true;
     this->day_ = day;
   }
 
   void play(const Ts &...x) override {
-    const uint8_t second = this->has_second_ ? this->second_ : 0xFF;
-    const uint8_t minute = this->has_minute_ ? this->minute_ : 0xFF;
-    const uint8_t hour = this->has_hour_ ? this->hour_ : 0xFF;
-    const uint8_t weekday = this->has_weekday_ ? this->weekday_ : 0xFF;
-    const uint8_t day = this->has_day_ ? this->day_ : 0xFF;
-    const int8_t enabled_override = this->has_enabled_ ? (this->enabled_ ? 1 : 0) : -1;
+    uint8_t second = 0xFF;
+    uint8_t minute = 0xFF;
+    uint8_t hour = 0xFF;
+    uint8_t weekday = 0xFF;
+    uint8_t day = 0xFF;
+
+    if (this->has_second_ && !this->validate_alarm_field_("second", this->second_.value(x...), 0, 59, &second))
+      return;
+    if (this->has_minute_ && !this->validate_alarm_field_("minute", this->minute_.value(x...), 0, 59, &minute))
+      return;
+    if (this->has_hour_ && !this->validate_alarm_field_("hour", this->hour_.value(x...), 0, 23, &hour))
+      return;
+    if (this->has_weekday_ && !this->validate_alarm_field_("weekday", this->weekday_.value(x...), 1, 7, &weekday))
+      return;
+    if (this->has_day_ && !this->validate_alarm_field_("day", this->day_.value(x...), 1, 31, &day))
+      return;
+
+    const int8_t enabled_override = this->has_enabled_ ? (this->enabled_.value(x...) ? 1 : 0) : -1;
     this->parent_->set_alarm_runtime(second, minute, hour, weekday, day, enabled_override);
   }
 
  protected:
+  bool validate_alarm_field_(const char *field, uint16_t value, uint8_t min_value, uint8_t max_value, uint8_t *out) {
+    if (value < min_value || value > max_value) {
+      ESP_LOGE("rx8xxx", "set_alarm: %s must be %u-%u, got %u", field, static_cast<unsigned>(min_value),
+               static_cast<unsigned>(max_value), static_cast<unsigned>(value));
+      return false;
+    }
+    *out = static_cast<uint8_t>(value);
+    return true;
+  }
+
   bool has_enabled_{false};
-  bool enabled_{false};
+  TemplatableValue<bool, Ts...> enabled_{};
   bool has_second_{false};
-  uint8_t second_{0xFF};
+  TemplatableValue<uint16_t, Ts...> second_{};
   bool has_minute_{false};
-  uint8_t minute_{0xFF};
+  TemplatableValue<uint16_t, Ts...> minute_{};
   bool has_hour_{false};
-  uint8_t hour_{0xFF};
+  TemplatableValue<uint16_t, Ts...> hour_{};
   bool has_weekday_{false};
-  uint8_t weekday_{0xFF};
+  TemplatableValue<uint16_t, Ts...> weekday_{};
   bool has_day_{false};
-  uint8_t day_{0xFF};
+  TemplatableValue<uint16_t, Ts...> day_{};
 };
 
 template<typename... Ts>
