@@ -88,7 +88,7 @@ void format_timestamp_utc_(const DecodedTimestampRecord &record, char *buffer, s
                 record.hour, record.minute, record.second, record.milliseconds);
 }
 
-const char *timestamp_record_mode_to_string_(TimestampRecordMode mode) {
+[[maybe_unused]] const char *timestamp_record_mode_to_string_(TimestampRecordMode mode) {
   switch (mode) {
     case TIMESTAMP_RECORD_LATEST:
       return "latest";
