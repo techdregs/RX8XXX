@@ -13,8 +13,7 @@ static const char *const TAG = "rx8xxx";
 // ---------------------------------------------------------------------------
 // Runtime alarm helpers
 // ---------------------------------------------------------------------------
-bool RX8XXXComponent::set_alarm_runtime(uint8_t second, uint8_t minute, uint8_t hour,
-                                        uint8_t weekday, uint8_t day, int8_t enabled_override) {
+bool RX8XXXComponent::set_alarm_runtime(uint8_t second, uint8_t minute, uint8_t hour, uint8_t weekday, uint8_t day) {
   if (weekday != 0xFF && day != 0xFF) {
     ESP_LOGE(TAG, "set_alarm_runtime: cannot set both weekday and day");
     return false;
@@ -30,14 +29,7 @@ bool RX8XXXComponent::set_alarm_runtime(uint8_t second, uint8_t minute, uint8_t 
   this->alarm_weekday_ = weekday;
   this->alarm_day_ = day;
 
-  if (enabled_override >= 0) {
-    this->alarm_enabled_ = enabled_override != 0;
-  }
-
-  if (this->alarm_enabled_) {
-    return this->configure_alarm_();
-  }
-  return true;
+  return this->configure_alarm_(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -50,8 +42,7 @@ bool RX8XXXComponent::configure_fout_() {
     return false;
   }
   ext &= ~RX8XXX_EXT_FSEL_MASK;
-  ext |= (static_cast<uint8_t>(this->fout_frequency_) << RX8XXX_EXT_FSEL_SHIFT)
-         & RX8XXX_EXT_FSEL_MASK;
+  ext |= (static_cast<uint8_t>(this->fout_frequency_) << RX8XXX_EXT_FSEL_SHIFT) & RX8XXX_EXT_FSEL_MASK;
   if (!this->write_byte(this->extension_reg_addr_(), ext)) {
     ESP_LOGE(TAG, "Can't write extension register");
     return false;
@@ -64,42 +55,54 @@ bool RX8XXXComponent::configure_fout_() {
 // ---------------------------------------------------------------------------
 bool RX8XXXComponent::clear_alarm_flag_() {
   uint8_t flags = 0;
-  if (!this->read_byte(this->flag_reg_addr_(), &flags)) return false;
+  if (!this->read_byte(this->flag_reg_addr_(), &flags))
+    return false;
   flags &= ~this->alarm_flag_mask_();
-  return this->write_byte(this->flag_reg_addr_(), flags);
+  if (!this->write_byte(this->flag_reg_addr_(), flags))
+    return false;
+  this->prev_alarm_flag_ = false;
+  return true;
 }
 
 bool RX8XXXComponent::clear_timer_flag_() {
   uint8_t flags = 0;
-  if (!this->read_byte(this->flag_reg_addr_(), &flags)) return false;
+  if (!this->read_byte(this->flag_reg_addr_(), &flags))
+    return false;
   flags &= ~this->timer_flag_mask_();
-  return this->write_byte(this->flag_reg_addr_(), flags);
+  if (!this->write_byte(this->flag_reg_addr_(), flags))
+    return false;
+  this->prev_timer_flag_ = false;
+  return true;
 }
 
 bool RX8XXXComponent::clear_event_flag_() {
   const uint8_t evf_mask = this->event_flag_mask_();
-  if (evf_mask == 0) return true;  // chip has no EVF (e.g. RX8130CE)
+  if (evf_mask == 0)
+    return true;  // chip has no EVF (e.g. RX8130CE)
   uint8_t flags = 0;
-  if (!this->read_byte(this->flag_reg_addr_(), &flags)) return false;
+  if (!this->read_byte(this->flag_reg_addr_(), &flags))
+    return false;
   flags &= ~evf_mask;
-  return this->write_byte(this->flag_reg_addr_(), flags);
+  if (!this->write_byte(this->flag_reg_addr_(), flags))
+    return false;
+  this->prev_event_flag_ = false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
 // setup()
 // ---------------------------------------------------------------------------
 void RX8XXXComponent::setup() {
-  // 1. Read flags, warn on VLF/XST/POR, clear startup flags only.
-  if (!this->check_and_clear_vlf_()) {
+  // 1. Report invalid-time flags without discarding them.
+  if (!this->check_time_validity_()) {
     this->mark_failed();
     return;
   }
 
   // 2. Configure battery backup (INIEN, optionally CHGEN).
-  if (this->battery_backup_) {
-    if (!this->configure_battery_backup_()) {
-      ESP_LOGW(TAG, "Battery backup configuration failed");
-    }
+  if (!this->configure_battery_backup_()) {
+    this->status_set_warning();
+    ESP_LOGW(TAG, "Battery backup configuration failed");
   }
 
   // 3. Configure FOUT clock output.
@@ -173,9 +176,19 @@ void RX8XXXComponent::update() {
 
   const bool alarm_set = (flag_byte & this->alarm_flag_mask_()) != 0;
   const bool timer_set = (flag_byte & this->timer_flag_mask_()) != 0;
-  const bool vlf_set   = (flag_byte & this->vlf_flag_mask_()) != 0;
+  const uint8_t evf_mask = this->event_flag_mask_();
+  const bool event_set = (flag_byte & evf_mask) != 0;
+  const bool event_edge = event_set && !this->prev_event_flag_;
+  const bool alarm_edge = alarm_set && !this->prev_alarm_flag_;
+  const bool timer_edge = timer_set && !this->prev_timer_flag_;
+  // Store the snapshot before any entity or automation callbacks can clear flags.
+  this->prev_alarm_flag_ = alarm_set;
+  this->prev_timer_flag_ = timer_set;
+  this->prev_event_flag_ = event_set;
 
+#ifdef USE_BINARY_SENSOR
   // Publish common binary sensor states.
+  const bool vlf_set = (flag_byte & this->vlf_flag_mask_()) != 0;
   if (this->vlf_sensor_ != nullptr)
     this->vlf_sensor_->publish_state(vlf_set);
   if (this->alarm_flag_sensor_ != nullptr)
@@ -183,24 +196,25 @@ void RX8XXXComponent::update() {
   if (this->timer_flag_sensor_ != nullptr)
     this->timer_flag_sensor_->publish_state(timer_set);
 
-  // Fire trigger objects only on rising-edge transition (0->1).
-  if (alarm_set && !this->prev_alarm_flag_)
-    for (auto *t : this->alarm_triggers_) t->trigger();
-  if (timer_set && !this->prev_timer_flag_)
-    for (auto *t : this->timer_triggers_) t->trigger();
+#endif
 
-  this->prev_alarm_flag_ = alarm_set;
-  this->prev_timer_flag_ = timer_set;
+  // Fire trigger objects only on rising-edge transition (0->1).
+  if (alarm_edge)
+    for (auto *t : this->alarm_triggers_)
+      t->trigger();
+  if (timer_edge)
+    for (auto *t : this->timer_triggers_)
+      t->trigger();
 
   // EVF polling (only on chips that have it, e.g. RX8111CE).
-  const uint8_t evf_mask = this->event_flag_mask_();
   if (evf_mask != 0) {
-    const bool event_set = (flag_byte & evf_mask) != 0;
+#ifdef USE_BINARY_SENSOR
     if (this->event_flag_sensor_ != nullptr)
       this->event_flag_sensor_->publish_state(event_set);
-    if (event_set && !this->prev_event_flag_)
-      for (auto *t : this->event_triggers_) t->trigger();
-    this->prev_event_flag_ = event_set;
+#endif
+    if (event_edge)
+      for (auto *t : this->event_triggers_)
+        t->trigger();
   }
 
   // Let each subclass publish its own chip-specific binary sensors.
@@ -222,10 +236,18 @@ void RX8XXXComponent::dump_config() {
   }
   const char *fout_str = "OFF";
   switch (this->fout_frequency_) {
-    case FoutFrequency::FOUT_32768_HZ: fout_str = "32768 Hz"; break;
-    case FoutFrequency::FOUT_1024_HZ:  fout_str = "1024 Hz";  break;
-    case FoutFrequency::FOUT_1_HZ:     fout_str = "1 Hz";     break;
-    case FoutFrequency::FOUT_OFF:      fout_str = "OFF";       break;
+    case FoutFrequency::FOUT_32768_HZ:
+      fout_str = "32768 Hz";
+      break;
+    case FoutFrequency::FOUT_1024_HZ:
+      fout_str = "1024 Hz";
+      break;
+    case FoutFrequency::FOUT_1_HZ:
+      fout_str = "1 Hz";
+      break;
+    case FoutFrequency::FOUT_OFF:
+      fout_str = "OFF";
+      break;
   }
   ESP_LOGCONFIG(TAG, "  FOUT Frequency: %s", fout_str);
   if (this->alarm_enabled_) {
@@ -235,13 +257,14 @@ void RX8XXXComponent::dump_config() {
     ESP_LOGCONFIG(TAG, "  Timer: enabled (count=%" PRIu32 ")", this->timer_count_);
   }
   if (this->event_enabled_) {
-    ESP_LOGCONFIG(TAG, "  Event: enabled (%s level)",
-                  this->event_level_ == EVENT_LEVEL_HIGH ? "high" : "low");
+    ESP_LOGCONFIG(TAG, "  Event: enabled (%s level)", this->event_level_ == EVENT_LEVEL_HIGH ? "high" : "low");
   }
-  LOG_BINARY_SENSOR("  ", "VLF",        this->vlf_sensor_);
+#ifdef USE_BINARY_SENSOR
+  LOG_BINARY_SENSOR("  ", "VLF", this->vlf_sensor_);
   LOG_BINARY_SENSOR("  ", "Alarm Flag", this->alarm_flag_sensor_);
   LOG_BINARY_SENSOR("  ", "Timer Flag", this->timer_flag_sensor_);
   LOG_BINARY_SENSOR("  ", "Event Flag", this->event_flag_sensor_);
+#endif
   RealTimeClock::dump_config();
 }
 
@@ -249,6 +272,15 @@ void RX8XXXComponent::dump_config() {
 // read_time() - read 0x10-0x16, convert to ESPTime, sync system clock
 // ---------------------------------------------------------------------------
 void RX8XXXComponent::read_time() {
+  uint8_t flags;
+  if (!this->read_byte(this->flag_reg_addr_(), &flags)) {
+    ESP_LOGW(TAG, "Cannot verify RTC time validity");
+    return;
+  }
+  if ((flags & this->invalid_time_mask_()) != 0) {
+    ESP_LOGW(TAG, "RTC time invalidated by power loss or oscillator stop; write trusted time");
+    return;
+  }
   uint8_t buf[7];
   // Burst read from SEC register. During I2C access the chip automatically
   // freezes the counter chain, so all 7 bytes form a coherent snapshot.
@@ -257,17 +289,28 @@ void RX8XXXComponent::read_time() {
     return;
   }
 
+  for (size_t i = 0; i < sizeof(buf); i++) {
+    if (i != 3 && ((buf[i] & 0x0F) > 9 || (buf[i] >> 4) > 9)) {
+      ESP_LOGW(TAG, "Invalid BCD in RTC time");
+      return;
+    }
+  }
+  const uint8_t weekday = onehot_to_weekday_(buf[3]);
+  if (weekday == 0) {
+    ESP_LOGW(TAG, "Invalid RTC weekday");
+    return;
+  }
   ESPTime rtc_time{
-      .second       = bcd_to_uint8_(buf[0] & 0x7F),
-      .minute       = bcd_to_uint8_(buf[1] & 0x7F),
-      .hour         = bcd_to_uint8_(buf[2] & 0x3F),
-      .day_of_week  = onehot_to_weekday_(buf[3]),
+      .second = bcd_to_uint8_(buf[0] & 0x7F),
+      .minute = bcd_to_uint8_(buf[1] & 0x7F),
+      .hour = bcd_to_uint8_(buf[2] & 0x3F),
+      .day_of_week = weekday,
       .day_of_month = bcd_to_uint8_(buf[4] & 0x3F),
-      .day_of_year  = 1,  // ignored by recalc_timestamp_utc(false)
-      .month        = bcd_to_uint8_(buf[5] & 0x1F),
-      .year         = static_cast<uint16_t>(bcd_to_uint8_(buf[6]) + 2000),
-      .is_dst       = false,
-      .timestamp    = 0,  // overwritten by recalc_timestamp_utc
+      .day_of_year = 1,  // ignored by recalc_timestamp_utc(false)
+      .month = bcd_to_uint8_(buf[5] & 0x1F),
+      .year = static_cast<uint16_t>(bcd_to_uint8_(buf[6]) + 2000),
+      .is_dst = false,
+      .timestamp = 0,  // overwritten by recalc_timestamp_utc
   };
   rtc_time.recalc_timestamp_utc(false);
 
@@ -275,11 +318,15 @@ void RX8XXXComponent::read_time() {
     ESP_LOGE(TAG, "Invalid RTC time, not syncing to system clock");
     return;
   }
+  const auto calendar = ESPTime::from_epoch_utc(rtc_time.timestamp);
+  if (calendar.year != rtc_time.year || calendar.month != rtc_time.month ||
+      calendar.day_of_month != rtc_time.day_of_month || calendar.day_of_week != weekday) {
+    ESP_LOGW(TAG, "Invalid RTC calendar date or weekday");
+    return;
+  }
 
-  ESP_LOGD(TAG, "Read %04d-%02d-%02d %02d:%02d:%02d DOW=%d",
-           rtc_time.year, rtc_time.month, rtc_time.day_of_month,
-           rtc_time.hour, rtc_time.minute, rtc_time.second,
-           rtc_time.day_of_week);
+  ESP_LOGD(TAG, "Read %04d-%02d-%02d %02d:%02d:%02d DOW=%d", rtc_time.year, rtc_time.month, rtc_time.day_of_month,
+           rtc_time.hour, rtc_time.minute, rtc_time.second, rtc_time.day_of_week);
 
   time::RealTimeClock::synchronize_epoch_(rtc_time.timestamp);
 }
@@ -289,7 +336,7 @@ void RX8XXXComponent::read_time() {
 // ---------------------------------------------------------------------------
 void RX8XXXComponent::write_time() {
   auto now = time::RealTimeClock::utcnow();
-  if (!now.is_valid()) {
+  if (!now.is_valid() || now.year > 2099) {
     ESP_LOGE(TAG, "Invalid system time, not syncing to RTC");
     return;
   }
@@ -314,17 +361,22 @@ void RX8XXXComponent::write_time() {
   // Always attempt to clear STOP, even if the write failed.
   if (!this->set_stop_bit_(false)) {
     ESP_LOGE(TAG, "Failed to clear STOP bit after time write");
+    return;
   }
 
   if (!ok) {
     ESP_LOGE(TAG, "Can't write time registers");
     return;
   }
+  uint8_t flags;
+  if (!this->read_byte(this->flag_reg_addr_(), &flags) ||
+      !this->write_byte(this->flag_reg_addr_(), flags & ~this->invalid_time_mask_())) {
+    ESP_LOGW(TAG, "Time written but validity flags could not be cleared");
+    return;
+  }
 
-  ESP_LOGD(TAG, "Wrote %04d-%02d-%02d %02d:%02d:%02d DOW=%d",
-           now.year, now.month, now.day_of_month,
-           now.hour, now.minute, now.second,
-           now.day_of_week);
+  ESP_LOGD(TAG, "Wrote %04d-%02d-%02d %02d:%02d:%02d DOW=%d", now.year, now.month, now.day_of_month, now.hour,
+           now.minute, now.second, now.day_of_week);
 }
 
 // ---------------------------------------------------------------------------

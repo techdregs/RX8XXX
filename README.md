@@ -12,6 +12,8 @@ Provides hardware timekeeping with alarm, countdown timer, event detection, hard
 
 ## Supported Models
 
+**Note:** RX8130CE has not been hardware-tested.
+
 | Model | Timer | Alarm Second | EVIN Event Detection | Timestamp Engine | Digital Offset | Timer 1/3600 Hz |
 |-------|-------|-------------|---------------------|------------------|----------------|-----------------|
 | RX8111CE | 24-bit (max 16,777,215) | Yes | Yes | Yes | No | No |
@@ -106,6 +108,11 @@ The I2C address is fixed at `0x32` (hardware default, not configurable).
 |--------|------|---------|-------|
 | `battery_backup` | boolean | `false` | Enables the chip's internal power switchover to backup battery |
 | `battery_charging` | boolean | `false` | Enables trickle charging. **Requires** `battery_backup: true` |
+
+Both settings are applied explicitly at startup. `battery_backup: false`
+clears backup enablement and charging, including settings retained from earlier
+firmware. `battery_backup: true` with `battery_charging: false` enables backup
+without charging.
 
 > **Warning:** Only enable `battery_charging` if you have a rechargeable backup cell. Charging a non-rechargeable cell (e.g., CR2032) can cause damage. Read the manual.
 
@@ -373,34 +380,57 @@ Callbacks fire **once per event**, not repeatedly while the flag remains set. Th
 #### Set Alarm (Runtime)
 
 Reprogram the alarm registers at runtime. Omit fields to disable matching on that field (the register is set to don't-care).
+Time fields remain templatable. This action does not change AIE or clear AF.
+Hardware interrupt enablement comes from `alarm_enabled` in the time component
+configuration (or its existing auto-enable rules). Programming while AIE is off
+does not enable alarm interrupts.
 
 ```yaml
 - rx8xxx.set_alarm:
     id: my_rtc
-    enabled: true
     second: 30         # or "seconds" (alias)
     minute: 0          # or "minutes" (alias)
     hour: 12           # or "hours" (alias)
     weekday: 3         # or "weekdays" (alias). 1=Sun … 7=Sat
-    day: 15            # or "days" (alias). 1–31
-```
-
-The runtime action fields are templatable, so they can be driven from ESPHome entities, Home Assistant inputs, globals, or lambdas. Static top-level alarm config (`alarm_hour`, `alarm_minute`, etc.) is still fixed at compile time.
-
-```yaml
-- rx8xxx.set_alarm:
-    id: my_rtc
-    enabled: true
-    hour: !lambda "return (uint16_t) id(next_alarm_hour);"
-    minute: !lambda "return (uint16_t) id(wake_minute).state;"
-    second: 0
+    # day: 15          # or "days" (alias). 1–31; use INSTEAD of weekday
 ```
 
 **Rules:**
 - Cannot specify both `weekday` and `day` (mutually exclusive).
 - Cannot use both singular and plural forms of the same field (e.g., `minute` and `minutes`).
-- At least one time field or `enabled` must be specified.
-- Constant action values are validated at compile time; templated values are range-checked at runtime before programming the RTC.
+- At least one time field must be specified.
+- Runtime `enabled` has been removed. Existing YAML containing it must be updated.
+  Remove `enabled: true` and configure hardware enablement on the time component.
+  Replace `set_alarm` calls using `enabled: false` with `unset_alarm` when the intent
+  is to remove the schedule. Unlike the old software gate, this changes hardware
+  alarm comparisons and does not block later `set_alarm` calls.
+- C++ integrations must remove the sixth (`enabled_override`) argument from
+  `set_alarm_runtime`. Subclass overrides of `configure_alarm_` now accept
+  `bool enable_interrupt`: startup passes true; runtime programming passes false.
+
+#### Unset Alarm (RX8111CE Only)
+
+Remove the scheduled alarm without changing AIE or clearing a pending AF:
+
+```yaml
+- rx8xxx.unset_alarm:
+    id: my_rtc
+```
+
+This selects weekday comparison (`WADA=0`) with no weekdays selected
+(`WEEK=0x00`, **AE=0**). Other alarm fields and interrupt sources are unchanged.
+An already-latched AF remains set; use `rx8xxx.clear_alarm_flag` separately to
+acknowledge it. A subsequent `set_alarm` or `schedule_alarm_in` replaces the empty
+schedule normally. Startup configuration is reapplied on the next MCU boot;
+this action does not change YAML settings or ESPHome preferences.
+
+Empty weekday matching was bench-tested on an RX8111CE across all seven weekdays
+and midnight rollovers, including AF latch preservation, rearming, and asserted
+INT level preservation. The action is available on both supported models.
+This is tested chip behavior, not a manufacturer-guaranteed disable mechanism.
+The two I2C writes are not atomic; a write failure is logged and can leave a
+partially updated schedule. Neither action acknowledges an alarm that occurs
+during reprogramming.
 
 #### Schedule Alarm In (Relative)
 
@@ -417,10 +447,13 @@ Schedule an alarm at a time offset from now. The component calculates the absolu
 
 **Rules:**
 - Total duration must be between 1 and 2,419,200 seconds (**28 days maximum**).
-- The alarm must already be enabled (via config `alarm_enabled: true` or `rx8xxx.set_alarm`).
+- The alarm must already be enabled by the time component configuration
+  (`alarm_enabled: true` or the existing auto-enable rules).
 - The system clock must be valid (synced from Home Assistant or read from the RTC).
 - Uses day-of-month matching (not weekday) for the computed target.
-- On RX8111CE, the per-second alarm field is automatically programmed from the target time. On RX8130CE, only minute/hour/day fields are used.
+- On RX8111CE, the per-second alarm field is programmed from the target time.
+  RX8130CE targets round **up** to the next whole minute, never to nearest:
+  alarms must not fire earlier than requested. Exact minute boundaries stay unchanged.
 
 > **Why 28 days?** The alarm hardware has no month register — it matches only on day-of-month, hour, minute, and second. Durations beyond 28 days (the shortest month) risk the day-of-month matching in the wrong month. For example, scheduling 31 days from January 31 computes a target of March 3, but the alarm registers would be set to day=3 — and the RTC would fire on February 3 instead since that is the next date that Day = 3 on the calendar.
 
@@ -454,7 +487,20 @@ The RTC /INT pin can be used in conjunction with the alarm function (and suitabl
 | TF (Timer) | No | Auto-releases ~7.8 ms | `rx8xxx.clear_timer_flag` |
 | EVF (Event, RX8111CE) | No | Held LOW until cleared if `EIE=1` | `rx8xxx.clear_event_flag` |
 
-These flags are **preserved across power cycles and reconfigurations**. On boot, startup flags are cleared (RX8111CE: VLF, XST, POR; RX8130CE: VLF, RSF), but AF, TF, and EVF are intentionally preserved so events that occurred while the MCU was off can be detected on the next poll.
+AF, TF, and EVF are **preserved across power cycles and reconfigurations**.
+Explicit successful flag clearing also rearms the corresponding callback,
+including when clearing inside that callback; no intervening zero-state poll is
+required. A failed clear does not rearm it.
+
+Time-invalid flags (RX8111CE: VLF, XST, POR; RX8130CE: VLF) remain set until
+a successful `rx8xxx.write_time` using trusted system time. Such flags block RTC
+synchronization even if the stored date looks plausible. RX8130CE RSF is cleared
+at setup. Invalid clock BCD, weekday masks, or calendar dates are also rejected.
+The clock weekday check does not affect the empty alarm mask used by `unset_alarm`.
+
+No new YAML fields are required. After power loss, obtain trusted time (for example
+from Home Assistant or SNTP), then call `rx8xxx.write_time`. Concrete C++ component,
+action and trigger classes are now `final`; custom subclasses must be migrated.
 
 ### Polling and Edge Detection
 
@@ -707,6 +753,13 @@ The [`Example_YAML/`](Example_YAML/) folder contains focused, minimal configurat
 | [`Minimal_Event_Deep_Sleep.yaml`](Example_YAML/Minimal_Event_Deep_Sleep.yaml) | Ultra-low-power wake on EVIN event + PMOS switch |
 
 ---
+
+## Hardware Tests
+
+For an automatic dedicated-fixture check, use [`test_rx8111.yaml`](test_rx8111.yaml).
+It runs once at boot and prints PASS/FAIL/SKIP results without Home Assistant or
+manual buttons. See [test wiring, coverage and safety notes](tests/README.md).
+The suite changes RTC time and interrupt settings; independent USB power is required.
 
 ## Dependencies
 

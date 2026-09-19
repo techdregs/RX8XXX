@@ -10,6 +10,7 @@ static const char *const TAG = "rx8111";
 
 namespace {
 
+#ifdef USE_TEXT_SENSOR
 struct DecodedTimestampRecord {
   uint16_t year;
   uint8_t month;
@@ -71,8 +72,7 @@ bool decode_timestamp_fields_(uint8_t sec_raw, uint8_t min_raw, uint8_t hour_raw
 }
 
 bool decode_single_timestamp_record_(const std::array<uint8_t, 10> &raw, DecodedTimestampRecord *record) {
-  const uint16_t fractional_1024 =
-      static_cast<uint16_t>((static_cast<uint16_t>(raw[1]) << 2) | (raw[0] & 0x03));
+  const uint16_t fractional_1024 = static_cast<uint16_t>((static_cast<uint16_t>(raw[1]) << 2) | (raw[0] & 0x03));
   const uint16_t milliseconds = static_cast<uint16_t>((fractional_1024 * 1000U + 512U) / 1024U);
 
   return decode_timestamp_fields_(raw[2], raw[3], raw[4], raw[6], raw[7], raw[8], raw[9], milliseconds, record);
@@ -87,6 +87,8 @@ void format_timestamp_utc_(const DecodedTimestampRecord &record, char *buffer, s
   std::snprintf(buffer, buffer_len, "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", record.year, record.month, record.day,
                 record.hour, record.minute, record.second, record.milliseconds);
 }
+
+#endif
 
 [[maybe_unused]] const char *timestamp_record_mode_to_string_(TimestampRecordMode mode) {
   switch (mode) {
@@ -112,40 +114,50 @@ void RX8111Component::dump_config() {
   if (this->timestamp_capture_active_()) {
     ESP_LOGCONFIG(TAG, "  Timestamp Record Mode: %s", timestamp_record_mode_to_string_(this->timestamp_record_mode_));
   }
-  if (this->event_timestamp_sensor_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  Event Timestamp Sensor: configured");
-  }
+#ifdef USE_TEXT_SENSOR
+  LOG_TEXT_SENSOR("  ", "Event Timestamp", this->event_timestamp_sensor_);
+#endif
   if (this->event_enabled_ || this->timestamp_capture_active_()) {
     static const char *const FILTER_NAMES[] = {"off", "3.9ms", "15.6ms", "125ms"};
-    ESP_LOGCONFIG(TAG, "  EVIN Event Level: %s",
-                  this->event_level_ == EVENT_LEVEL_HIGH ? "high" : "low");
+    ESP_LOGCONFIG(TAG, "  EVIN Event Level: %s", this->event_level_ == EVENT_LEVEL_HIGH ? "high" : "low");
     ESP_LOGCONFIG(TAG, "  EVIN Filter: %s (level %u)", FILTER_NAMES[this->evin_filter_], this->evin_filter_);
     const char *pull_str = "none (Hi-Z)";
     switch (this->evin_pull_) {
-      case EVIN_PULL_UP_500K:    pull_str = "pull-up 500k"; break;
-      case EVIN_PULL_UP_1M:      pull_str = "pull-up 1M"; break;
-      case EVIN_PULL_UP_10M:     pull_str = "pull-up 10M"; break;
-      case EVIN_PULL_DOWN_500K:  pull_str = "pull-down 500k"; break;
-      default: break;
+      case EVIN_PULL_UP_500K:
+        pull_str = "pull-up 500k";
+        break;
+      case EVIN_PULL_UP_1M:
+        pull_str = "pull-up 1M";
+        break;
+      case EVIN_PULL_UP_10M:
+        pull_str = "pull-up 10M";
+        break;
+      case EVIN_PULL_DOWN_500K:
+        pull_str = "pull-down 500k";
+        break;
+      default:
+        break;
     }
     ESP_LOGCONFIG(TAG, "  EVIN Pull: %s", pull_str);
   }
-  binary_sensor::log_binary_sensor(TAG, "  ", "XST (Crystal Stop)", this->xst_sensor_);
-  binary_sensor::log_binary_sensor(TAG, "  ", "Battery Low (VLOW)", this->battery_low_sensor_);
-  binary_sensor::log_binary_sensor(TAG, "  ", "EVIN State", this->evin_sensor_);
+#ifdef USE_BINARY_SENSOR
+  LOG_BINARY_SENSOR("  ", "XST (Crystal Stop)", this->xst_sensor_);
+  LOG_BINARY_SENSOR("  ", "Battery Low (VLOW)", this->battery_low_sensor_);
+  LOG_BINARY_SENSOR("  ", "EVIN State", this->evin_sensor_);
+#endif
 }
 
 // ---------------------------------------------------------------------------
-// check_and_clear_vlf_
+// check_time_validity_
 //
 // Reads the flag register (0x1E) and warns on:
 //   - VLF (bit1): oscillation was lost / power failure; time data invalid.
 //   - XST (bit0): crystal oscillation stop detected.
 //   - POR (bit7): power-on reset occurred.
-// Clears VLF, XST, and POR. Preserves AF, TF, EVF, UF so that update()
-// polling can detect them. Returns false only on I2C failure.
+// Preserve invalid-time flags until a trusted write and leave interrupt flags latched.
+// Returns false only on I2C failure.
 // ---------------------------------------------------------------------------
-bool RX8111Component::check_and_clear_vlf_() {
+bool RX8111Component::check_time_validity_() {
   uint8_t flags = 0;
   if (!this->read_byte(RX8111_REG_FLAG, &flags)) {
     ESP_LOGE(TAG, "Can't read flag register");
@@ -163,12 +175,7 @@ bool RX8111Component::check_and_clear_vlf_() {
     ESP_LOGD(TAG, "POR set - power-on reset occurred (expected on first boot).");
   }
 
-  // Clear startup flags only; preserve AF, TF, EVF, UF for update() polling.
-  uint8_t cleared = flags & ~(RX8111_FLAG_VLF | RX8111_FLAG_XST | RX8111_FLAG_POR);
-  if (!this->write_byte(RX8111_REG_FLAG, cleared)) {
-    ESP_LOGE(TAG, "Can't write flag register");
-    return false;
-  }
+  // Retain invalid-time flags across boots until write_time succeeds.
 
   return true;
 }
@@ -190,9 +197,12 @@ bool RX8111Component::configure_battery_backup_() {
     return false;
   }
 
-  reg |= RX8111_PWR_INIEN;
+  if (this->battery_backup_)
+    reg |= RX8111_PWR_INIEN;
+  else
+    reg &= ~RX8111_PWR_INIEN;
 
-  if (this->battery_charging_) {
+  if (this->battery_backup_ && this->battery_charging_) {
     reg |= RX8111_PWR_CHGEN;
   } else {
     reg &= ~RX8111_PWR_CHGEN;
@@ -203,7 +213,7 @@ bool RX8111Component::configure_battery_backup_() {
     return false;
   }
 
-  ESP_LOGD(TAG, "Battery backup enabled (INIEN=1, CHGEN=%d)", this->battery_charging_ ? 1 : 0);
+  ESP_LOGD(TAG, "Battery backup: %s, charging: %s", ONOFF(this->battery_backup_), ONOFF(this->battery_charging_));
   return true;
 }
 
@@ -223,36 +233,58 @@ bool RX8111Component::configure_battery_backup_() {
 // a prior alarm event that the user must explicitly clear via
 // rx8xxx.clear_alarm_flag. Reconfiguring the alarm does not alter past events.
 // ---------------------------------------------------------------------------
-bool RX8111Component::configure_alarm_() {
+bool RX8111Component::unset_alarm() {
+  uint8_t extension;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &extension)) {
+    ESP_LOGE(TAG, "unset_alarm: cannot read extension register");
+    return false;
+  }
+  // Empty comparison first: do not interpret the previous date as a weekday mask.
+  // Keep AE=0; AE=1 would bypass comparison instead of preventing matches.
+  if (!this->write_byte(RX8XXX_REG_WD_ALARM, 0x00) ||
+      !this->write_byte(RX8111_REG_EXTENSION, extension & ~RX8111_EXT_WADA)) {
+    ESP_LOGE(TAG, "unset_alarm: I2C write failed; alarm state may be partially updated");
+    return false;
+  }
+  ESP_LOGD(TAG, "Alarm unset; AIE and AF unchanged");
+  return true;
+}
+
+bool RX8111Component::configure_alarm_(bool enable_interrupt) {
   // Keep AIE asserted while updating alarm registers so runtime reprogramming
   // does not deassert /INT when AF is already latched.
   uint8_t ctrl = 0;
-  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl)) return false;
+  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl))
+    return false;
 
   // --- Second alarm (0x2C) ---
   uint8_t sec_alarm = RX8XXX_ALARM_AE;  // AE=1 -> disabled
   if (this->alarm_second_ != 0xFF) {
     sec_alarm = uint8_to_bcd_(this->alarm_second_);  // AE=0 -> enabled
   }
-  if (!this->write_byte(RX8111_REG_SEC_ALARM, sec_alarm)) return false;
+  if (!this->write_byte(RX8111_REG_SEC_ALARM, sec_alarm))
+    return false;
 
   // --- Minute alarm (0x17) ---
   uint8_t min_alarm = RX8XXX_ALARM_AE;
   if (this->alarm_minute_ != 0xFF) {
     min_alarm = uint8_to_bcd_(this->alarm_minute_);
   }
-  if (!this->write_byte(RX8XXX_REG_MIN_ALARM, min_alarm)) return false;
+  if (!this->write_byte(RX8XXX_REG_MIN_ALARM, min_alarm))
+    return false;
 
   // --- Hour alarm (0x18) ---
   uint8_t hour_alarm = RX8XXX_ALARM_AE;
   if (this->alarm_hour_ != 0xFF) {
     hour_alarm = uint8_to_bcd_(this->alarm_hour_);
   }
-  if (!this->write_byte(RX8XXX_REG_HOUR_ALARM, hour_alarm)) return false;
+  if (!this->write_byte(RX8XXX_REG_HOUR_ALARM, hour_alarm))
+    return false;
 
   // --- Week / Day alarm (0x19) and WADA bit ---
   uint8_t ext = 0;
-  if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &ext))
+    return false;
 
   uint8_t wd_alarm = RX8XXX_ALARM_AE;
   if (this->alarm_weekday_ != 0xFF) {
@@ -264,12 +296,17 @@ bool RX8111Component::configure_alarm_() {
     wd_alarm = uint8_to_bcd_(this->alarm_day_);
     ext |= RX8111_EXT_WADA;
   }
-  if (!this->write_byte(RX8XXX_REG_WD_ALARM, wd_alarm)) return false;
-  if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  if (!this->write_byte(RX8XXX_REG_WD_ALARM, wd_alarm))
+    return false;
+  if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+    return false;
 
-  // Ensure AIE is enabled after programming. If already enabled, this is a no-op.
-  ctrl |= RX8111_CTRL_AIE;
-  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  // Only startup configuration enables AIE. Runtime programming preserves it.
+  if (enable_interrupt) {
+    ctrl |= RX8111_CTRL_AIE;
+    if (!this->write_byte(RX8111_REG_CONTROL, ctrl))
+      return false;
+  }
 
   return true;
 }
@@ -290,14 +327,18 @@ bool RX8111Component::configure_alarm_() {
 bool RX8111Component::configure_timer_() {
   // Step 1: stop timer and disable interrupt while reconfiguring.
   uint8_t ext = 0;
-  if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &ext))
+    return false;
   ext &= ~RX8111_EXT_TE;
-  if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+    return false;
 
   uint8_t ctrl = 0;
-  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl)) return false;
+  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl))
+    return false;
   ctrl &= ~RX8111_CTRL_TIE;
-  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  if (!this->write_byte(RX8111_REG_CONTROL, ctrl))
+    return false;
 
   // Step 2: write 24-bit counter (LSB first).
   uint32_t count = this->timer_count_;
@@ -306,7 +347,8 @@ bool RX8111Component::configure_timer_() {
       static_cast<uint8_t>((count >> 8) & 0xFF),
       static_cast<uint8_t>((count >> 16) & 0xFF),
   };
-  if (!this->write_bytes(RX8XXX_REG_TIMER0, timer_buf, sizeof(timer_buf))) return false;
+  if (!this->write_bytes(RX8XXX_REG_TIMER0, timer_buf, sizeof(timer_buf)))
+    return false;
 
   // Step 3: set source clock. 1/3600Hz is not supported; clamp to 1/60Hz.
   uint8_t tsel = static_cast<uint8_t>(this->timer_clock_);
@@ -316,14 +358,17 @@ bool RX8111Component::configure_timer_() {
   }
   ext &= ~RX8111_EXT_TSEL_MASK;
   ext |= (tsel & RX8111_EXT_TSEL_MASK);
-  if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+    return false;
 
   // Step 4: enable interrupt and start timer.
   ctrl |= RX8111_CTRL_TIE;
-  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  if (!this->write_byte(RX8111_REG_CONTROL, ctrl))
+    return false;
 
   ext |= RX8111_EXT_TE;
-  if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+    return false;
 
   return true;
 }
@@ -331,18 +376,24 @@ bool RX8111Component::configure_timer_() {
 // ---------------------------------------------------------------------------
 // disable_alarm_
 //
-// Disables alarm matching and alarm interrupt generation without touching AF.
+// Disable the alarm interrupt without touching AF. Matching can still set AF.
 // ---------------------------------------------------------------------------
 bool RX8111Component::disable_alarm_() {
   uint8_t ctrl = 0;
-  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl)) return false;
+  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl))
+    return false;
   ctrl &= ~RX8111_CTRL_AIE;
-  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  if (!this->write_byte(RX8111_REG_CONTROL, ctrl))
+    return false;
 
-  if (!this->write_byte(RX8111_REG_SEC_ALARM, RX8XXX_ALARM_AE)) return false;
-  if (!this->write_byte(RX8XXX_REG_MIN_ALARM, RX8XXX_ALARM_AE)) return false;
-  if (!this->write_byte(RX8XXX_REG_HOUR_ALARM, RX8XXX_ALARM_AE)) return false;
-  if (!this->write_byte(RX8XXX_REG_WD_ALARM, RX8XXX_ALARM_AE)) return false;
+  if (!this->write_byte(RX8111_REG_SEC_ALARM, RX8XXX_ALARM_AE))
+    return false;
+  if (!this->write_byte(RX8XXX_REG_MIN_ALARM, RX8XXX_ALARM_AE))
+    return false;
+  if (!this->write_byte(RX8XXX_REG_HOUR_ALARM, RX8XXX_ALARM_AE))
+    return false;
+  if (!this->write_byte(RX8XXX_REG_WD_ALARM, RX8XXX_ALARM_AE))
+    return false;
   return true;
 }
 
@@ -353,14 +404,18 @@ bool RX8111Component::disable_alarm_() {
 // ---------------------------------------------------------------------------
 bool RX8111Component::disable_timer_() {
   uint8_t ctrl = 0;
-  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl)) return false;
+  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl))
+    return false;
   ctrl &= ~RX8111_CTRL_TIE;
-  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  if (!this->write_byte(RX8111_REG_CONTROL, ctrl))
+    return false;
 
   uint8_t ext = 0;
-  if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &ext))
+    return false;
   ext &= ~RX8111_EXT_TE;
-  if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+    return false;
   return true;
 }
 
@@ -372,9 +427,11 @@ bool RX8111Component::disable_timer_() {
 // ---------------------------------------------------------------------------
 bool RX8111Component::configure_event_() {
   uint8_t ctrl = 0;
-  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl)) return false;
+  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl))
+    return false;
   ctrl |= RX8111_CTRL_EIE;
-  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  if (!this->write_byte(RX8111_REG_CONTROL, ctrl))
+    return false;
   return true;
 }
 
@@ -387,9 +444,11 @@ bool RX8111Component::configure_event_() {
 // ---------------------------------------------------------------------------
 bool RX8111Component::disable_event_() {
   uint8_t ctrl = 0;
-  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl)) return false;
+  if (!this->read_byte(RX8111_REG_CONTROL, &ctrl))
+    return false;
   ctrl &= ~RX8111_CTRL_EIE;
-  if (!this->write_byte(RX8111_REG_CONTROL, ctrl)) return false;
+  if (!this->write_byte(RX8111_REG_CONTROL, ctrl))
+    return false;
   return true;
 }
 
@@ -401,7 +460,8 @@ bool RX8111Component::disable_event_() {
 // ---------------------------------------------------------------------------
 bool RX8111Component::apply_runtime_options_() {
   uint8_t ext = 0;
-  if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &ext))
+    return false;
 
   if (this->timestamp_capture_active_() || this->event_enabled_) {
     ext |= RX8111_EXT_ETS;
@@ -409,12 +469,17 @@ bool RX8111Component::apply_runtime_options_() {
     ext &= ~RX8111_EXT_ETS;
   }
 
-  if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+  if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+    return false;
   return this->write_timestamp_mode_bits_();
 }
 
 bool RX8111Component::timestamp_capture_active_() const {
-  return this->timestamp_enabled_ || this->event_timestamp_sensor_ != nullptr;
+#ifdef USE_TEXT_SENSOR
+  if (this->event_timestamp_sensor_ != nullptr)
+    return true;
+#endif
+  return this->timestamp_enabled_;
 }
 
 bool RX8111Component::buffered_timestamp_mode_() const {
@@ -423,14 +488,16 @@ bool RX8111Component::buffered_timestamp_mode_() const {
 
 bool RX8111Component::write_timestamp_mode_bits_() {
   uint8_t tsctrl1 = 0;
-  if (!this->read_byte(RX8111_REG_TSCTRL1, &tsctrl1)) return false;
+  if (!this->read_byte(RX8111_REG_TSCTRL1, &tsctrl1))
+    return false;
 
   tsctrl1 &= ~(RX8111_TSCTRL1_EISEL | RX8111_TSCTRL1_TSCLR | RX8111_TSCTRL1_TSRAM);
   if (this->timestamp_capture_active_() && this->buffered_timestamp_mode_()) {
     tsctrl1 |= RX8111_TSCTRL1_TSRAM;
   }
 
-  if (!this->write_byte(RX8111_REG_TSCTRL1, tsctrl1)) return false;
+  if (!this->write_byte(RX8111_REG_TSCTRL1, tsctrl1))
+    return false;
 
   uint8_t evin_reg = 0;
   if (this->event_enabled_ || this->timestamp_capture_active_()) {
@@ -467,34 +534,42 @@ bool RX8111Component::write_timestamp_mode_bits_() {
 
 bool RX8111Component::clear_timestamp_ram_() {
   uint8_t ext = 0;
-  if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &ext))
+    return false;
 
   const bool restore_ets = (ext & RX8111_EXT_ETS) != 0;
   if (restore_ets) {
     ext &= ~RX8111_EXT_ETS;
-    if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+    if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+      return false;
   }
 
   uint8_t tsctrl1 = 0;
-  if (!this->read_byte(RX8111_REG_TSCTRL1, &tsctrl1)) return false;
+  if (!this->read_byte(RX8111_REG_TSCTRL1, &tsctrl1))
+    return false;
   tsctrl1 |= RX8111_TSCTRL1_TSCLR;
-  if (!this->write_byte(RX8111_REG_TSCTRL1, tsctrl1)) return false;
+  if (!this->write_byte(RX8111_REG_TSCTRL1, tsctrl1))
+    return false;
 
   if (restore_ets) {
     ext |= RX8111_EXT_ETS;
-    if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+    if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+      return false;
   }
 
   return true;
 }
 
 void RX8111Component::after_initial_time_read_() {
+#ifdef USE_TEXT_SENSOR
   // On startup, read any pre-existing timestamps unconditionally (pass 0xFF to bypass EVF check).
   if (this->event_timestamp_sensor_ != nullptr && !this->publish_timestamp_records_(0xFF)) {
     ESP_LOGW(TAG, "Failed to publish startup event timestamps");
   }
+#endif
 }
 
+#ifdef USE_TEXT_SENSOR
 bool RX8111Component::publish_timestamp_records_(uint8_t flag_byte) {
   if (this->event_timestamp_sensor_ == nullptr) {
     return true;
@@ -511,19 +586,22 @@ bool RX8111Component::publish_timestamp_records_(uint8_t flag_byte) {
     // In buffered mode, check TSEMP before touching ETS.  Reading TSCTRL3
     // does not require disabling ETS.
     uint8_t tsctrl3 = 0;
-    if (!this->read_byte(RX8111_REG_TSCTRL3, &tsctrl3)) return false;
+    if (!this->read_byte(RX8111_REG_TSCTRL3, &tsctrl3))
+      return false;
     if ((tsctrl3 & RX8111_TSCTRL3_TSEMP) != 0) {
       return true;  // buffer empty, nothing to do
     }
   }
 
   uint8_t ext = 0;
-  if (!this->read_byte(RX8111_REG_EXTENSION, &ext)) return false;
+  if (!this->read_byte(RX8111_REG_EXTENSION, &ext))
+    return false;
 
   const bool restore_ets = (ext & RX8111_EXT_ETS) != 0;
   if (restore_ets) {
     ext &= ~RX8111_EXT_ETS;
-    if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+    if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+      return false;
   }
 
   bool ok = true;
@@ -587,7 +665,8 @@ bool RX8111Component::publish_timestamp_records_(uint8_t flag_byte) {
 
   if (restore_ets) {
     ext |= RX8111_EXT_ETS;
-    if (!this->write_byte(RX8111_REG_EXTENSION, ext)) return false;
+    if (!this->write_byte(RX8111_REG_EXTENSION, ext))
+      return false;
   }
 
   return ok;
@@ -599,7 +678,10 @@ bool RX8111Component::publish_timestamp_records_(uint8_t flag_byte) {
 // Reads the status monitor register (0x33) to get EVIN and VLOW states.
 // XST is available directly from the flag_byte already read by update().
 // ---------------------------------------------------------------------------
+#endif
+
 void RX8111Component::update_chip_binary_sensors_(uint8_t flag_byte) {
+#ifdef USE_BINARY_SENSOR
   // XST is bit0 of the flag register (already read by the base update()).
   if (this->xst_sensor_ != nullptr) {
     this->xst_sensor_->publish_state((flag_byte & RX8111_FLAG_XST) != 0);
@@ -620,9 +702,12 @@ void RX8111Component::update_chip_binary_sensors_(uint8_t flag_byte) {
     }
   }
 
+#endif
+#ifdef USE_TEXT_SENSOR
   if (this->event_timestamp_sensor_ != nullptr && !this->publish_timestamp_records_(flag_byte)) {
     ESP_LOGW(TAG, "Failed to publish event timestamp records");
   }
+#endif
 }
 
 }  // namespace rx8xxx

@@ -5,15 +5,23 @@ This file is intentionally self-contained (no relative imports from __init__.py)
 to avoid a circular import with esphome.components.time:
     time  →  rx8xxx/time.py  →  __init__.py  →  time  (partially initialised)
 """
+
 import logging
 
-import esphome.codegen as cg
-import esphome.config_validation as cv
 from esphome import automation
+import esphome.codegen as cg
 from esphome.components import binary_sensor, i2c, text_sensor, time
+import esphome.config_validation as cv
 from esphome.const import (
+    CONF_DAY,
+    CONF_HOUR,
+    CONF_HOURS,
     CONF_ID,
+    CONF_MINUTE,
+    CONF_MINUTES,
     CONF_MODEL,
+    CONF_SECOND,
+    CONF_SECONDS,
     CONF_TRIGGER_ID,
     DEVICE_CLASS_BATTERY,
     DEVICE_CLASS_PROBLEM,
@@ -22,7 +30,31 @@ from esphome.const import (
 _LOGGER = logging.getLogger(__name__)
 
 DEPENDENCIES = ["i2c"]
-AUTO_LOAD = ["binary_sensor", "text_sensor"]
+CODEOWNERS = ["@techdregs"]
+
+
+def AUTO_LOAD(config=None):
+    if config is None:
+        return ["binary_sensor", "text_sensor"]
+    dependencies = []
+    if any(
+        key in config
+        for key in (
+            "vlf",
+            "alarm_flag",
+            "timer_flag",
+            "event_flag",
+            "xst",
+            "battery_low",
+            "evin",
+            "vblf",
+        )
+    ):
+        dependencies.append("binary_sensor")
+    if "event_timestamp" in config:
+        dependencies.append("text_sensor")
+    return dependencies
+
 
 # ---------------------------------------------------------------------------
 # Namespace / class references
@@ -33,12 +65,13 @@ RX8XXXComponent = rx8xxx_ns.class_("RX8XXXComponent", time.RealTimeClock, cg.Com
 RX8111Component = rx8xxx_ns.class_("RX8111Component", RX8XXXComponent)
 RX8130Component = rx8xxx_ns.class_("RX8130Component", RX8XXXComponent)
 
-WriteAction          = rx8xxx_ns.class_("WriteAction",          automation.Action)
-ReadAction           = rx8xxx_ns.class_("ReadAction",           automation.Action)
+WriteAction = rx8xxx_ns.class_("WriteAction", automation.Action)
+ReadAction = rx8xxx_ns.class_("ReadAction", automation.Action)
 ClearAlarmFlagAction = rx8xxx_ns.class_("ClearAlarmFlagAction", automation.Action)
 ClearTimerFlagAction = rx8xxx_ns.class_("ClearTimerFlagAction", automation.Action)
 ClearEventFlagAction = rx8xxx_ns.class_("ClearEventFlagAction", automation.Action)
-SetAlarmAction      = rx8xxx_ns.class_("SetAlarmAction", automation.Action)
+SetAlarmAction = rx8xxx_ns.class_("SetAlarmAction", automation.Action)
+UnsetAlarmAction = rx8xxx_ns.class_("UnsetAlarmAction", automation.Action)
 ScheduleAlarmInAction = rx8xxx_ns.class_("ScheduleAlarmInAction", automation.Action)
 
 AlarmTrigger = rx8xxx_ns.class_("AlarmTrigger", automation.Trigger.template())
@@ -46,61 +79,56 @@ TimerTrigger = rx8xxx_ns.class_("TimerTrigger", automation.Trigger.template())
 EventTrigger = rx8xxx_ns.class_("EventTrigger", automation.Trigger.template())
 
 FoutFrequency = rx8xxx_ns.enum("FoutFrequency")
-TimerClock    = rx8xxx_ns.enum("TimerClock")
-EventLevel    = rx8xxx_ns.enum("EventLevel")
+TimerClock = rx8xxx_ns.enum("TimerClock")
+EventLevel = rx8xxx_ns.enum("EventLevel")
 TimestampRecordMode = rx8xxx_ns.enum("TimestampRecordMode")
-EvinPull      = rx8xxx_ns.enum("EvinPull")
+EvinPull = rx8xxx_ns.enum("EvinPull")
 
 # ---------------------------------------------------------------------------
 # Configuration key constants
 # ---------------------------------------------------------------------------
-CONF_BATTERY_BACKUP   = "battery_backup"
+CONF_BATTERY_BACKUP = "battery_backup"
 CONF_BATTERY_CHARGING = "battery_charging"
-CONF_FOUT_FREQUENCY   = "fout_frequency"
+CONF_FOUT_FREQUENCY = "fout_frequency"
 
-CONF_ALARM_SECOND  = "alarm_second"
-CONF_ALARM_MINUTE  = "alarm_minute"
-CONF_ALARM_HOUR    = "alarm_hour"
+CONF_ALARM_SECOND = "alarm_second"
+CONF_ALARM_MINUTE = "alarm_minute"
+CONF_ALARM_HOUR = "alarm_hour"
 CONF_ALARM_WEEKDAY = "alarm_weekday"
-CONF_ALARM_DAY     = "alarm_day"
+CONF_ALARM_DAY = "alarm_day"
 CONF_ALARM_ENABLED = "alarm_enabled"
-CONF_ON_ALARM      = "on_alarm"
+CONF_ON_ALARM = "on_alarm"
 
 CONF_TIMER_COUNT = "timer_count"
 CONF_TIMER_CLOCK = "timer_clock"
 CONF_TIMER_ENABLED = "timer_enabled"
-CONF_ON_TIMER    = "on_timer"
+CONF_ON_TIMER = "on_timer"
 
-CONF_EVENT_LEVEL   = "event_level"
+CONF_EVENT_LEVEL = "event_level"
 CONF_EVENT_ENABLED = "event_enabled"
-CONF_ON_EVENT      = "on_event"
-CONF_EVENT_FLAG    = "event_flag"
-CONF_EVIN_FILTER   = "evin_filter"
-CONF_EVIN_PULL     = "evin_pull"
+CONF_ON_EVENT = "on_event"
+CONF_EVENT_FLAG = "event_flag"
+CONF_EVIN_FILTER = "evin_filter"
+CONF_EVIN_PULL = "evin_pull"
 
-CONF_VLF        = "vlf"
+CONF_VLF = "vlf"
 CONF_ALARM_FLAG = "alarm_flag"
 CONF_TIMER_FLAG = "timer_flag"
 
-CONF_XST         = "xst"
-CONF_BATTERY_LOW = "battery_low"  # RX8111CE: VLOW; RX8130CE: VBFF (same user-facing name)
-CONF_EVIN        = "evin"
+CONF_XST = "xst"
+CONF_BATTERY_LOW = (
+    "battery_low"  # RX8111CE: VLOW; RX8130CE: VBFF (same user-facing name)
+)
+CONF_EVIN = "evin"
 
 CONF_VBLF = "vblf"
 
-CONF_TIMESTAMP      = "timestamp_enabled"
+CONF_TIMESTAMP = "timestamp_enabled"
 CONF_TIMESTAMP_RECORD_MODE = "timestamp_record_mode"
 CONF_EVENT_TIMESTAMP = "event_timestamp"
 CONF_DIGITAL_OFFSET = "digital_offset"
-CONF_SECOND = "second"
-CONF_MINUTE = "minute"
-CONF_HOUR = "hour"
 CONF_WEEKDAY = "weekday"
-CONF_DAY = "day"
 CONF_ENABLED = "enabled"
-CONF_SECONDS = "seconds"
-CONF_MINUTES = "minutes"
-CONF_HOURS = "hours"
 CONF_WEEKDAYS = "weekdays"
 CONF_DAYS = "days"
 
@@ -134,21 +162,21 @@ MODEL_CLASS_MAP = {
 
 FOUT_FREQUENCY_MAP = {
     "32768hz": FoutFrequency.FOUT_32768_HZ,
-    "1024hz":  FoutFrequency.FOUT_1024_HZ,
-    "1hz":     FoutFrequency.FOUT_1_HZ,
-    "off":     FoutFrequency.FOUT_OFF,
+    "1024hz": FoutFrequency.FOUT_1024_HZ,
+    "1hz": FoutFrequency.FOUT_1_HZ,
+    "off": FoutFrequency.FOUT_OFF,
 }
 
 TIMER_CLOCK_MAP = {
-    "4096hz":   TimerClock.TIMER_4096_HZ,
-    "64hz":     TimerClock.TIMER_64_HZ,
-    "1hz":      TimerClock.TIMER_1_HZ,
-    "1_60hz":   TimerClock.TIMER_1_60_HZ,
+    "4096hz": TimerClock.TIMER_4096_HZ,
+    "64hz": TimerClock.TIMER_64_HZ,
+    "1hz": TimerClock.TIMER_1_HZ,
+    "1_60hz": TimerClock.TIMER_1_60_HZ,
     "1_3600hz": TimerClock.TIMER_1_3600_HZ,  # RX8130CE only; validated below
 }
 
 EVENT_LEVEL_MAP = {
-    "low":  EventLevel.EVENT_LEVEL_LOW,
+    "low": EventLevel.EVENT_LEVEL_LOW,
     "high": EventLevel.EVENT_LEVEL_HIGH,
 }
 
@@ -159,11 +187,11 @@ TIMESTAMP_RECORD_MODE_MAP = {
 }
 
 EVIN_PULL_MAP = {
-    "none":           EvinPull.EVIN_PULL_NONE,
-    "pullup_500k":    EvinPull.EVIN_PULL_UP_500K,
-    "pullup_1m":      EvinPull.EVIN_PULL_UP_1M,
-    "pullup_10m":     EvinPull.EVIN_PULL_UP_10M,
-    "pulldown_500k":  EvinPull.EVIN_PULL_DOWN_500K,
+    "none": EvinPull.EVIN_PULL_NONE,
+    "pullup_500k": EvinPull.EVIN_PULL_UP_500K,
+    "pullup_1m": EvinPull.EVIN_PULL_UP_1M,
+    "pullup_10m": EvinPull.EVIN_PULL_UP_10M,
+    "pulldown_500k": EvinPull.EVIN_PULL_DOWN_500K,
 }
 
 
@@ -177,6 +205,7 @@ def _model_name(model):
 # ---------------------------------------------------------------------------
 def _make_alarm_validator(name, min_val, max_val, description):
     """Factory for alarm field range validators."""
+
     def validator(value):
         value = cv.int_(value)
         if not min_val <= value <= max_val:
@@ -184,6 +213,7 @@ def _make_alarm_validator(name, min_val, max_val, description):
                 f"{name} must be {min_val}\u2013{max_val} ({description}), got {value}"
             )
         return value
+
     return validator
 
 
@@ -197,13 +227,12 @@ _validate_alarm_hour = _make_alarm_validator(
     "alarm_hour", 0, 23, "24-hour clock; midnight=0, noon=12"
 )
 _validate_alarm_weekday = _make_alarm_validator(
-    "alarm_weekday", 1, 7,
-    "1=Sunday, 2=Monday, 3=Tuesday, 4=Wednesday, "
-    "5=Thursday, 6=Friday, 7=Saturday"
+    "alarm_weekday",
+    1,
+    7,
+    "1=Sunday, 2=Monday, 3=Tuesday, 4=Wednesday, 5=Thursday, 6=Friday, 7=Saturday",
 )
-_validate_alarm_day = _make_alarm_validator(
-    "alarm_day", 1, 31, "day of month"
-)
+_validate_alarm_day = _make_alarm_validator("alarm_day", 1, 31, "day of month")
 
 
 # ---------------------------------------------------------------------------
@@ -215,14 +244,13 @@ def _validate_config(config):
     model = config[CONF_MODEL]
 
     # ---- Battery -----------------------------------------------------------
-    if config.get(CONF_BATTERY_CHARGING, False) and not config.get(CONF_BATTERY_BACKUP, False):
+    if config.get(CONF_BATTERY_CHARGING, False) and not config.get(
+        CONF_BATTERY_BACKUP, False
+    ):
         raise cv.Invalid("'battery_charging' requires 'battery_backup: true'")
 
     # ---- Timer clock -------------------------------------------------------
-    if (
-        config.get(CONF_TIMER_CLOCK) is TIMER_CLOCK_MAP["1_3600hz"]
-        and model != "RX8130CE"
-    ):
+    if config.get(CONF_TIMER_CLOCK) == "1_3600hz" and model != "RX8130CE":
         raise cv.Invalid(
             "Timer clock '1_3600hz' (once per hour) is only available on the RX8130CE"
         )
@@ -241,40 +269,76 @@ def _validate_config(config):
             )
 
     # ---- Explicit enable override validation -------------------------------
-    if config.get(CONF_TIMER_ENABLED, False) and CONF_TIMER_COUNT not in config:
+    if (
+        config.get(CONF_TIMER_ENABLED, CONF_ON_TIMER in config)
+        and CONF_TIMER_COUNT not in config
+    ):
         raise cv.Invalid(
             "'timer_enabled: true' requires 'timer_count' so the timer has a defined period"
         )
 
     # ---- Model-specific feature availability --------------------------------
     _MODEL_FEATURES = [
-        (CONF_ALARM_SECOND, "RX8111CE",
-         "'alarm_second' (per-second alarm matching) is only available on the "
-         "RX8111CE. The RX8130CE does not have a seconds alarm register."),
-        (CONF_TIMESTAMP, "RX8111CE",
-         "'timestamp_enabled' is only available on the RX8111CE"),
-        (CONF_TIMESTAMP_RECORD_MODE, "RX8111CE",
-         "'timestamp_record_mode' is only available on the RX8111CE"),
-        (CONF_EVENT_TIMESTAMP, "RX8111CE",
-         "'event_timestamp' text sensor is only available on the RX8111CE"),
-        (CONF_XST, "RX8111CE",
-         "'xst' binary sensor is only available on the RX8111CE"),
-        (CONF_EVIN, "RX8111CE",
-         "'evin' binary sensor is only available on the RX8111CE"),
-        (CONF_EVENT_LEVEL, "RX8111CE",
-         "'event_level' (EVIN event detection level) is only available on the RX8111CE"),
-        (CONF_EVENT_FLAG, "RX8111CE",
-         "'event_flag' binary sensor is only available on the RX8111CE"),
-        (CONF_ON_EVENT, "RX8111CE",
-         "'on_event' trigger is only available on the RX8111CE"),
-        (CONF_EVIN_FILTER, "RX8111CE",
-         "'evin_filter' is only available on the RX8111CE"),
-        (CONF_EVIN_PULL, "RX8111CE",
-         "'evin_pull' is only available on the RX8111CE"),
-        (CONF_DIGITAL_OFFSET, "RX8130CE",
-         "'digital_offset' is only available on the RX8130CE"),
-        (CONF_VBLF, "RX8130CE",
-         "'vblf' binary sensor is only available on the RX8130CE"),
+        (
+            CONF_ALARM_SECOND,
+            "RX8111CE",
+            (
+                "'alarm_second' (per-second alarm matching) is only available on the "
+                "RX8111CE. The RX8130CE does not have a seconds alarm register."
+            ),
+        ),
+        (
+            CONF_TIMESTAMP,
+            "RX8111CE",
+            "'timestamp_enabled' is only available on the RX8111CE",
+        ),
+        (
+            CONF_TIMESTAMP_RECORD_MODE,
+            "RX8111CE",
+            "'timestamp_record_mode' is only available on the RX8111CE",
+        ),
+        (
+            CONF_EVENT_TIMESTAMP,
+            "RX8111CE",
+            "'event_timestamp' text sensor is only available on the RX8111CE",
+        ),
+        (CONF_XST, "RX8111CE", "'xst' binary sensor is only available on the RX8111CE"),
+        (
+            CONF_EVIN,
+            "RX8111CE",
+            "'evin' binary sensor is only available on the RX8111CE",
+        ),
+        (
+            CONF_EVENT_LEVEL,
+            "RX8111CE",
+            "'event_level' (EVIN event detection level) is only available on the RX8111CE",
+        ),
+        (
+            CONF_EVENT_FLAG,
+            "RX8111CE",
+            "'event_flag' binary sensor is only available on the RX8111CE",
+        ),
+        (
+            CONF_ON_EVENT,
+            "RX8111CE",
+            "'on_event' trigger is only available on the RX8111CE",
+        ),
+        (
+            CONF_EVIN_FILTER,
+            "RX8111CE",
+            "'evin_filter' is only available on the RX8111CE",
+        ),
+        (CONF_EVIN_PULL, "RX8111CE", "'evin_pull' is only available on the RX8111CE"),
+        (
+            CONF_DIGITAL_OFFSET,
+            "RX8130CE",
+            "'digital_offset' is only available on the RX8130CE",
+        ),
+        (
+            CONF_VBLF,
+            "RX8130CE",
+            "'vblf' binary sensor is only available on the RX8130CE",
+        ),
     ]
     for conf_key, required_model, msg in _MODEL_FEATURES:
         val = config.get(conf_key)
@@ -329,29 +393,29 @@ CONFIG_SCHEMA = cv.All(
             # the generated C++ instantiates the correct subclass.
             cv.GenerateID(): cv.declare_id(RX8XXXComponent),
             cv.Required(CONF_MODEL): cv.enum(MODEL_MAP, upper=True),
-
             # ---- Battery backup -------------------------------------------
             cv.Optional(CONF_BATTERY_BACKUP, default=False): cv.boolean,
             cv.Optional(CONF_BATTERY_CHARGING, default=False): cv.boolean,
-
             # ---- FOUT clock output ----------------------------------------
             cv.Optional(CONF_FOUT_FREQUENCY, default="off"): cv.enum(
                 FOUT_FREQUENCY_MAP, lower=True
             ),
-
             # ---- Alarm configuration --------------------------------------
             # Omit a field to leave that alarm register disabled (AE=1 in hardware).
             # alarm_weekday and alarm_day are mutually exclusive (validated below).
-            cv.Optional(CONF_ALARM_SECOND):  _validate_alarm_second,   # RX8111CE only; 0–59
-            cv.Optional(CONF_ALARM_MINUTE):  _validate_alarm_minute,   # 0–59
-            cv.Optional(CONF_ALARM_HOUR):    _validate_alarm_hour,     # 0–23 (24-hour clock)
-            cv.Optional(CONF_ALARM_WEEKDAY): _validate_alarm_weekday,  # 1=Sun, 2=Mon … 7=Sat
-            cv.Optional(CONF_ALARM_DAY):     _validate_alarm_day,      # 1–31; warn for 29–31
+            cv.Optional(
+                CONF_ALARM_SECOND
+            ): _validate_alarm_second,  # RX8111CE only; 0–59
+            cv.Optional(CONF_ALARM_MINUTE): _validate_alarm_minute,  # 0–59
+            cv.Optional(CONF_ALARM_HOUR): _validate_alarm_hour,  # 0–23 (24-hour clock)
+            cv.Optional(
+                CONF_ALARM_WEEKDAY
+            ): _validate_alarm_weekday,  # 1=Sun, 2=Mon … 7=Sat
+            cv.Optional(CONF_ALARM_DAY): _validate_alarm_day,  # 1–31; warn for 29–31
             cv.Optional(CONF_ALARM_ENABLED): cv.boolean,
             cv.Optional(CONF_ON_ALARM): automation.validate_automation(
                 {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(AlarmTrigger)}
             ),
-
             # ---- Wake-up timer --------------------------------------------
             # Max count is model-dependent: 16,777,215 (24-bit, RX8111CE) or
             # 65,535 (16-bit, RX8130CE). The schema enforces the 24-bit ceiling;
@@ -364,7 +428,6 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_ON_TIMER): automation.validate_automation(
                 {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(TimerTrigger)}
             ),
-
             # ---- EVIN event detection (RX8111CE only) --------------------
             cv.Optional(CONF_EVENT_LEVEL): cv.enum(EVENT_LEVEL_MAP, lower=True),
             cv.Optional(CONF_EVENT_ENABLED): cv.boolean,
@@ -373,14 +436,12 @@ CONFIG_SCHEMA = cv.All(
             ),
             cv.Optional(CONF_EVIN_FILTER): cv.int_range(min=0, max=3),
             cv.Optional(CONF_EVIN_PULL): cv.enum(EVIN_PULL_MAP, lower=True),
-
             # ---- Binary sensor sub-components (common) --------------------
             cv.Optional(CONF_VLF): binary_sensor.binary_sensor_schema(
                 device_class=DEVICE_CLASS_PROBLEM,
             ),
             cv.Optional(CONF_ALARM_FLAG): binary_sensor.binary_sensor_schema(),
             cv.Optional(CONF_TIMER_FLAG): binary_sensor.binary_sensor_schema(),
-
             # ---- Binary sensor sub-components (RX8111CE only) -------------
             cv.Optional(CONF_XST): binary_sensor.binary_sensor_schema(
                 device_class=DEVICE_CLASS_PROBLEM,
@@ -390,13 +451,11 @@ CONFIG_SCHEMA = cv.All(
             ),
             cv.Optional(CONF_EVIN): binary_sensor.binary_sensor_schema(),
             cv.Optional(CONF_EVENT_FLAG): binary_sensor.binary_sensor_schema(),
-
             # ---- Binary sensor sub-components (RX8130CE only) -------------
             cv.Optional(CONF_VBLF): binary_sensor.binary_sensor_schema(
                 device_class=DEVICE_CLASS_BATTERY,
             ),
             # battery_low also used for RX8130CE VBFF (same CONF key, different register)
-
             # ---- RX8111CE-specific ----------------------------------------
             cv.Optional(CONF_TIMESTAMP, default=False): cv.boolean,
             cv.Optional(CONF_TIMESTAMP_RECORD_MODE): cv.enum(
@@ -405,7 +464,6 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_EVENT_TIMESTAMP): text_sensor.text_sensor_schema(
                 device_class="timestamp",
             ),
-
             # ---- RX8130CE-specific ----------------------------------------
             cv.Optional(CONF_DIGITAL_OFFSET): cv.int_range(min=-64, max=63),
         }
@@ -433,9 +491,9 @@ async def to_code(config):
     # (ID name, ID type).  All automation action schemas (_PARENT_SCHEMA) use
     # cv.use_id(RX8XXXComponent), so the registered entry must carry the abstract
     # type or get_variable will wait forever → "circular dependency" error.
-    config[CONF_ID].type = model_class          # concrete type for `new` expression
-    var = cg.new_Pvariable(config[CONF_ID])     # captures type string eagerly
-    config[CONF_ID].type = RX8XXXComponent      # reset to abstract for registry
+    config[CONF_ID].type = model_class  # concrete type for `new` expression
+    var = cg.new_Pvariable(config[CONF_ID])  # captures type string eagerly
+    config[CONF_ID].type = RX8XXXComponent  # reset to abstract for registry
 
     await cg.register_component(var, config)
     await i2c.register_i2c_device(var, config)
@@ -579,14 +637,15 @@ _PARENT_SCHEMA = cv.Schema({cv.GenerateID(): cv.use_id(RX8XXXComponent)})
 
 def _validate_set_alarm_action(config):
     has_time_fields = any(
-        key in config for key in (CONF_SECOND, CONF_MINUTE, CONF_HOUR, CONF_WEEKDAY, CONF_DAY)
+        key in config
+        for key in (CONF_SECOND, CONF_MINUTE, CONF_HOUR, CONF_WEEKDAY, CONF_DAY)
     )
     if CONF_WEEKDAY in config and CONF_DAY in config:
         raise cv.Invalid("rx8xxx.set_alarm cannot include both 'weekday' and 'day'")
-    if not has_time_fields and CONF_ENABLED not in config:
+    if not has_time_fields:
         raise cv.Invalid(
             "rx8xxx.set_alarm requires at least one time field "
-            "(second/minute/hour/weekday/day) or 'enabled'"
+            "(second/minute/hour/weekday/day); use rx8xxx.unset_alarm to remove an alarm"
         )
     return config
 
@@ -648,35 +707,45 @@ def _normalize_schedule_alarm_in_keys(config):
     return out
 
 
-@automation.register_action("rx8xxx.write_time", WriteAction, _PARENT_SCHEMA, synchronous=True)
+@automation.register_action(
+    "rx8xxx.write_time", WriteAction, _PARENT_SCHEMA, synchronous=True
+)
 async def rx8xxx_write_time_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var
 
 
-@automation.register_action("rx8xxx.read_time", ReadAction, _PARENT_SCHEMA, synchronous=True)
+@automation.register_action(
+    "rx8xxx.read_time", ReadAction, _PARENT_SCHEMA, synchronous=True
+)
 async def rx8xxx_read_time_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var
 
 
-@automation.register_action("rx8xxx.clear_alarm_flag", ClearAlarmFlagAction, _PARENT_SCHEMA, synchronous=True)
+@automation.register_action(
+    "rx8xxx.clear_alarm_flag", ClearAlarmFlagAction, _PARENT_SCHEMA, synchronous=True
+)
 async def rx8xxx_clear_alarm_flag_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var
 
 
-@automation.register_action("rx8xxx.clear_timer_flag", ClearTimerFlagAction, _PARENT_SCHEMA, synchronous=True)
+@automation.register_action(
+    "rx8xxx.clear_timer_flag", ClearTimerFlagAction, _PARENT_SCHEMA, synchronous=True
+)
 async def rx8xxx_clear_timer_flag_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
     return var
 
 
-@automation.register_action("rx8xxx.clear_event_flag", ClearEventFlagAction, _PARENT_SCHEMA, synchronous=True)
+@automation.register_action(
+    "rx8xxx.clear_event_flag", ClearEventFlagAction, _PARENT_SCHEMA, synchronous=True
+)
 async def rx8xxx_clear_event_flag_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
@@ -689,7 +758,10 @@ async def rx8xxx_clear_event_flag_to_code(config, action_id, template_arg, args)
     cv.All(
         _PARENT_SCHEMA.extend(
             {
-                cv.Optional(CONF_ENABLED): cv.templatable(cv.boolean),
+                cv.Optional(CONF_ENABLED): cv.invalid(
+                    "'enabled' was removed from rx8xxx.set_alarm. Configure alarm_enabled "
+                    "on the time component; use rx8xxx.unset_alarm to remove an alarm."
+                ),
                 cv.Optional(CONF_SECOND): cv.templatable(_validate_alarm_second),
                 cv.Optional(CONF_SECONDS): cv.templatable(_validate_alarm_second),
                 cv.Optional(CONF_MINUTE): cv.templatable(_validate_alarm_minute),
@@ -710,9 +782,6 @@ async def rx8xxx_clear_event_flag_to_code(config, action_id, template_arg, args)
 async def rx8xxx_set_alarm_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     await cg.register_parented(var, config[CONF_ID])
-    if CONF_ENABLED in config:
-        template_ = await cg.templatable(config[CONF_ENABLED], args, cg.bool_)
-        cg.add(var.set_enabled(template_))
     if CONF_SECOND in config:
         template_ = await cg.templatable(config[CONF_SECOND], args, cg.uint16)
         cg.add(var.set_second(template_))
@@ -728,6 +797,15 @@ async def rx8xxx_set_alarm_to_code(config, action_id, template_arg, args):
     if CONF_DAY in config:
         template_ = await cg.templatable(config[CONF_DAY], args, cg.uint16)
         cg.add(var.set_day(template_))
+    return var
+
+
+@automation.register_action(
+    "rx8xxx.unset_alarm", UnsetAlarmAction, _PARENT_SCHEMA, synchronous=True
+)
+async def rx8xxx_unset_alarm_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
     return var
 
 

@@ -3,7 +3,7 @@
 # Uses rx8xxx.schedule_alarm_in to compute the target time from the current
 # system clock and program the alarm registers automatically.
 #
-# Note: the alarm must already be enabled (via alarm config or set_alarm).
+# Note: the alarm must already be enabled by the time component configuration.
 # At least one alarm field is required to enable it — here we use alarm_minute
 # as a placeholder (schedule_alarm_in overwrites all fields anyway).
 
