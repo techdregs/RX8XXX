@@ -1,3 +1,6 @@
+# DEPRECATED
+*Features of this component are now available directly in ESPHome via the RX8111 component*
+https://esphome.io/components/time/rx8111/
 
 Note: This should be considered as a beta. I have tested heavily in ESPHome to verify features work correctly, but there are probably edge cases that I haven't considered. Feel free to submit bugs. I have not tested the regular embedded libraries as much, so I anticipate those might have more issues.
 
